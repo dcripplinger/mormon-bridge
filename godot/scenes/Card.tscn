@@ -1,0 +1,14 @@
+[gd_scene load_steps=2 format=3 uid="uid://c4pwqrghbaixy"]
+
+[ext_resource type="Script" uid="uid://bv6dxdtn4bwqm" path="res://scripts/ui/card_view.gd" id="1_0ovqg"]
+
+[node name="CardView" type="PanelContainer"]
+custom_minimum_size = Vector2(80, 124)
+size_flags_horizontal = 0
+size_flags_vertical = 0
+script = ExtResource("1_0ovqg")
+
+[node name="TextureRect" type="TextureRect" parent="."]
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5

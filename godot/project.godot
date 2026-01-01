@@ -14,6 +14,18 @@ config/name="Mormon Bridge"
 config/features=PackedStringArray("4.4", "Mobile")
 config/icon="res://icon.svg"
 
+[autoload]
+
+GameManager="*res://scripts/autoload/game_manager.gd"
+
+[display]
+
+window/size/viewport_width=450
+window/size/viewport_height=800
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
 [rendering]
 
+textures/canvas_textures/default_texture_filter=2
 renderer/rendering_method="mobile"

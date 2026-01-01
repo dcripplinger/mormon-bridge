@@ -1,0 +1,21 @@
+# Mormon Bridge - Godot/GDScript Project Rules
+
+## Language and Framework
+- This is a Godot game project using GDScript
+- Always use GDScript syntax when writing or modifying `.gd` files
+- Refer to official Godot documentation and GDScript documentation when implementing features
+- Follow Godot best practices for signals, nodes, scenes, and resource management
+
+## Code Style
+- Use TABS for indentation in all `.gd` (GDScript) and `.tscn` (Godot scene) files
+- Tab size: 4 spaces equivalent
+- Follow GDScript naming conventions:
+  - snake_case for variables, functions, and file names
+  - PascalCase for class names
+  - SCREAMING_SNAKE_CASE for constants
+- Use ASCII characters for quotes, dashes, and punctuation unless specifically required (e.g., use " and ' not " " ' ', use - not – or —)
+
+## Resources
+- Godot Docs: https://docs.godotengine.org/
+- GDScript Reference: https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/
+
