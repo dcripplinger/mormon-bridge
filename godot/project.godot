@@ -20,9 +20,10 @@ GameManager="*res://scripts/autoload/game_manager.gd"
 
 [display]
 
-window/size/viewport_width=450
-window/size/viewport_height=800
-window/stretch/mode="canvas_items"
+window/size/viewport_width=1080
+window/size/viewport_height=1920
+window/size/mode=2
+window/stretch/mode="viewport"
 window/stretch/aspect="expand"
 
 [rendering]

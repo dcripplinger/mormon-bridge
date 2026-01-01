@@ -1,14 +1,11 @@
-extends Control
+extends Node2D
 
-@onready var player_hand_container: Control = $PlayerHand
-@onready var deck_button: Button = $VBox/TopBar/DrawDeckButton
-@onready var draw_discard_button: Button = $VBox/TopBar/DrawDiscardButton
-@onready var discard_selected_button: Button = $VBox/TopBar/DiscardSelectedButton
-@onready var buy_button: Button = $VBox/TopBar/BuyButton
-@onready var info_label: Label = $VBox/TopBar/InfoLabel
-@onready var deck_view_container: Control = $VBox/Table/DeckAndDiscardRow/DeckArea/DeckView
-@onready var discard_area: HBoxContainer = $VBox/Table/DeckAndDiscardRow/DiscardArea/DiscardCard
-@onready var melds_box: VBoxContainer = $VBox/Table/Melds
+# References to scene nodes
+@onready var camera: CameraController = $Camera
+@onready var table_content: Node2D = $TableContent
+@onready var deck_node: Node2D = $TableContent/Deck
+@onready var discard_node: Node2D = $TableContent/DiscardPile
+@onready var player_hand_container: Control = $HandLayer/PlayerHand
 
 var selected_card: Card = null
 var multi_selected: Array[Card] = []
@@ -16,26 +13,30 @@ var multi_selected: Array[Card] = []
 var buy_window_timer: Timer
 
 func _ready() -> void:
+	# Camera is already enabled and positioned in the scene
+	
+	# Connect to game state changes
 	GameManager.state_changed.connect(_refresh_ui)
 	GameManager.buy_window_opened.connect(_on_buy_window_opened)
 	GameManager.buy_window_closed.connect(_on_buy_window_closed)
+	
+	# Setup buy window timer
 	buy_window_timer = Timer.new()
 	buy_window_timer.one_shot = true
 	add_child(buy_window_timer)
 	buy_window_timer.timeout.connect(_on_buy_window_timeout)
+	
+	# Start the game
 	GameManager.new_local_game(1, 2)
 	_refresh_ui()
 
 func _on_buy_window_opened() -> void:
 	var is_ai_turn := GameManager.current_player().is_ai
-	buy_button.visible = is_ai_turn
+	# TODO: Add buy button to hand layer when we implement UI
 	if is_ai_turn:
-		buy_button.disabled = GameManager.deck.top_discard() == null
 		buy_window_timer.start(2.0)
-		info_label.text = "AI turn: You may buy the discard"
 
 func _on_buy_window_closed() -> void:
-	buy_button.visible = false
 	if buy_window_timer.time_left > 0:
 		buy_window_timer.stop()
 
@@ -46,37 +47,22 @@ func _on_buy_window_timeout() -> void:
 	GameManager.perform_ai_turn_if_needed()
 
 func _refresh_ui() -> void:
-	info_label.text = _build_info_text()
 	_render_hand()
-	_render_deck()
-	_render_discard()
-	_render_melds()
-	_update_buttons()
-	_update_tooltips()
-
-func _build_info_text() -> String:
-	var base := "Round %d - Current: %s" % [GameManager.round_index + 1, GameManager.current_player().display_name]
-	var phase_text := ""
-	match GameManager.turn_phase:
-		GameManager.TurnPhase.AWAIT_BUY:
-			phase_text = " | Phase: Buy window / Choose draw"
-		GameManager.TurnPhase.DRAW:
-			phase_text = " | Phase: Draw"
-		GameManager.TurnPhase.PLAY_OR_DISCARD:
-			phase_text = " | Select a card to discard" if GameManager.current_player_index == 0 and GameManager.has_drawn_this_turn else " | Phase: Play/Discard"
-		GameManager.TurnPhase.ROUND_END:
-			phase_text = " | Round end"
-	return base + phase_text
+	_render_table_deck()
+	_render_table_discard()
 
 func _render_hand() -> void:
+	# Clear existing hand
 	for child in player_hand_container.get_children():
 		child.queue_free()
 	selected_card = null
 	multi_selected.clear()
-	var packed: PackedScene = load("res://scenes/Card.tscn") as PackedScene
-	var your_hand: Array[Card] = GameManager.players[0].hand
 	
-	# Dynamic card dimensions based on viewport size
+	var your_hand: Array[Card] = GameManager.players[0].hand
+	if your_hand.is_empty():
+		return
+	
+	# Dynamic card dimensions based on viewport width
 	var viewport_size := get_viewport_rect().size
 	var scale_factor := viewport_size.x / 450.0  # Base screen width
 	scale_factor = clamp(scale_factor, 0.5, 2.5)
@@ -89,7 +75,7 @@ func _render_hand() -> void:
 	# Calculate total width of the hand with overlapping cards
 	var total_width := card_width + (your_hand.size() - 1) * card_width * (1.0 - overlap_percent)
 	
-	# Create an HBoxContainer for proper centering
+	# Create a container for proper centering
 	var hand_layout := Control.new()
 	hand_layout.custom_minimum_size = Vector2(total_width, card_height)
 	# Anchor to bottom center
@@ -105,11 +91,14 @@ func _render_hand() -> void:
 	hand_layout.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	player_hand_container.add_child(hand_layout)
 	
+	# Load the card scene
+	var packed: PackedScene = load("res://scenes/Card.tscn") as PackedScene
+	
 	for i in range(your_hand.size()):
 		var c := your_hand[i]
 		var card_view: CardView = packed.instantiate() as CardView
 		card_view.card = c
-		card_view.clicked.connect(_on_card_clicked)
+		card_view.clicked.connect(_on_hand_card_clicked)
 		
 		# Position with overlap relative to hand_layout
 		var x_pos := i * card_width * (1.0 - overlap_percent)
@@ -125,59 +114,28 @@ func _render_hand() -> void:
 			(last_child as CardView).selected = true
 			selected_card = (last_child as CardView).card
 
-func _render_deck() -> void:
+func _render_table_deck() -> void:
 	# Clear existing deck view
-	for child in deck_view_container.get_children():
+	for child in deck_node.get_children():
 		child.queue_free()
 	
-	# Create a DeckView instance
-	var deck_view := DeckView.new()
+	# Create a TableDeckView instance
+	var deck_view := TableDeckView.new()
 	deck_view.deck_size = GameManager.deck.draw_pile.size()
-	deck_view_container.add_child(deck_view)
+	deck_node.add_child(deck_view)
 
-func _render_discard() -> void:
-	for child in discard_area.get_children():
+func _render_table_discard() -> void:
+	# Clear existing discard
+	for child in discard_node.get_children():
 		child.queue_free()
+	
 	var top: Card = GameManager.deck.top_discard()
 	if top:
-		var packed: PackedScene = load("res://scenes/Card.tscn") as PackedScene
-		var card_view: CardView = packed.instantiate() as CardView
+		var card_view := TableCardView.new()
 		card_view.card = top
-		discard_area.add_child(card_view)
+		discard_node.add_child(card_view)
 
-func _render_melds() -> void:
-	for child in melds_box.get_children():
-		child.queue_free()
-	var packed: PackedScene = load("res://scenes/Card.tscn") as PackedScene
-	for meld in GameManager.table_melds:
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		var label := Label.new()
-		label.text = "%s %s" % ["P%d" % (int(meld["owner"]) + 1), meld["type"]]
-		label.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		row.add_child(label)
-		for c in meld["cards"]:
-			var card_view: CardView = packed.instantiate() as CardView
-			card_view.card = c
-			row.add_child(card_view)
-		melds_box.add_child(row)
-
-func _update_buttons() -> void:
-	var is_your_turn := GameManager.current_player_index == 0
-	deck_button.disabled = not is_your_turn or GameManager.turn_phase == GameManager.TurnPhase.PLAY_OR_DISCARD and GameManager.has_drawn_this_turn
-	draw_discard_button.disabled = not is_your_turn or GameManager.turn_phase != GameManager.TurnPhase.AWAIT_BUY
-	discard_selected_button.disabled = not is_your_turn or selected_card == null or GameManager.turn_phase != GameManager.TurnPhase.PLAY_OR_DISCARD
-	buy_button.disabled = GameManager.deck.top_discard() == null
-	$VBox/TopBar/MakeGroupButton.disabled = multi_selected.size() < 3
-	$VBox/TopBar/MakeRunButton.disabled = multi_selected.size() < 4
-
-func _update_tooltips() -> void:
-	deck_button.tooltip_text = "Draw the top card from the deck"
-	draw_discard_button.tooltip_text = "Draw the top discard as your draw"
-	discard_selected_button.tooltip_text = "Select a card in your hand to discard" if selected_card == null else "Discard the selected card"
-	buy_button.tooltip_text = "Buy the top discard during AI's buy window"
-
-func _on_card_clicked(card_view: CardView) -> void:
+func _on_hand_card_clicked(card_view: CardView) -> void:
 	# Toggle selection with Ctrl to multi-select, otherwise single-select
 	if Input.is_key_pressed(KEY_CTRL):
 		card_view.selected = not card_view.selected
@@ -186,7 +144,7 @@ func _on_card_clicked(card_view: CardView) -> void:
 		else:
 			multi_selected.erase(card_view.card)
 	else:
-		# Deselect all cards in hand (they're now in a layout container)
+		# Deselect all cards in hand
 		if player_hand_container.get_child_count() > 0:
 			var hand_layout := player_hand_container.get_child(0)
 			for child in hand_layout.get_children():
@@ -196,32 +154,37 @@ func _on_card_clicked(card_view: CardView) -> void:
 		card_view.selected = true
 		multi_selected.append(card_view.card)
 	selected_card = card_view.card
-	_update_buttons()
 
-func _on_MakeGroupButton_pressed() -> void:
-	if multi_selected.size() >= 3:
-		if GameManager.try_make_group_from_current(multi_selected.duplicate()):
-			_refresh_ui()
-
-func _on_MakeRunButton_pressed() -> void:
-	if multi_selected.size() >= 4:
-		if GameManager.try_make_run_from_current(multi_selected.duplicate()):
-			_refresh_ui()
-
-func _on_DrawDeckButton_pressed() -> void:
-	GameManager.draw_from_deck_for_current()
-	_refresh_ui()
-
-func _on_DrawDiscardButton_pressed() -> void:
-	GameManager.claim_discard_as_draw_for_current()
-	_refresh_ui()
-
-func _on_DiscardSelectedButton_pressed() -> void:
-	if selected_card:
-		GameManager.discard_from_current(selected_card)
-		_refresh_ui()
-
-func _on_BuyButton_pressed() -> void:
-	# Human buys during AI's buy window
-	var bought := GameManager.allow_buy_from_non_current_player(0)
-	_refresh_ui()
+# Input handling for game actions
+func _input(event: InputEvent) -> void:
+	# Check if it's the human player's turn
+	if GameManager.current_player_index != 0:
+		return
+	
+	# Handle keyboard shortcuts for game actions
+	if event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_D:  # Draw from deck
+				if GameManager.turn_phase != GameManager.TurnPhase.PLAY_OR_DISCARD or not GameManager.has_drawn_this_turn:
+					GameManager.draw_from_deck_for_current()
+					_refresh_ui()
+			KEY_P:  # Pick up discard
+				if GameManager.turn_phase == GameManager.TurnPhase.AWAIT_BUY:
+					GameManager.claim_discard_as_draw_for_current()
+					_refresh_ui()
+			KEY_SPACE:  # Discard selected card
+				if selected_card and GameManager.turn_phase == GameManager.TurnPhase.PLAY_OR_DISCARD:
+					GameManager.discard_from_current(selected_card)
+					_refresh_ui()
+			KEY_G:  # Make group from selected cards
+				if multi_selected.size() >= 3:
+					if GameManager.try_make_group_from_current(multi_selected.duplicate()):
+						_refresh_ui()
+			KEY_R:  # Make run from selected cards
+				if multi_selected.size() >= 4:
+					if GameManager.try_make_run_from_current(multi_selected.duplicate()):
+						_refresh_ui()
+			KEY_B:  # Buy during AI's turn
+				if GameManager.turn_phase == GameManager.TurnPhase.AWAIT_BUY and GameManager.current_player().is_ai:
+					GameManager.allow_buy_from_non_current_player(0)
+					_refresh_ui()

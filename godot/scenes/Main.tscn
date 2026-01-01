@@ -1,104 +1,36 @@
-[gd_scene load_steps=2 format=3 uid="uid://cjvyecjj1gfd0"]
+[gd_scene load_steps=4 format=3 uid="uid://cjvyecjj1gfd0"]
 
 [ext_resource type="Script" uid="uid://b3rmb4awtshyo" path="res://scripts/main.gd" id="1_3jctm"]
+[ext_resource type="PackedScene" uid="uid://b8g7k3jm5n2p1" path="res://scenes/TableContent.tscn" id="2_table"]
+[ext_resource type="Script" uid="uid://b78sbojsstirc" path="res://scripts/camera_controller.gd" id="3_camera"]
 
-[node name="Main" type="Control"]
+[node name="Main" type="Node2D"]
+script = ExtResource("1_3jctm")
+
+[node name="Camera" type="Camera2D" parent="."]
+position = Vector2(540, 960)
+script = ExtResource("3_camera")
+
+[node name="TableContent" parent="." instance=ExtResource("2_table")]
+
+[node name="BackgroundLayer" type="CanvasLayer" parent="."]
+layer = -1
+
+[node name="Background" type="ColorRect" parent="BackgroundLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.0823529, 0.478431, 0.0823529, 1)
+
+[node name="HandLayer" type="CanvasLayer" parent="."]
+
+[node name="PlayerHand" type="Control" parent="HandLayer"]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-script = ExtResource("1_3jctm")
-
-[node name="Background" type="ColorRect" parent="."]
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-color = Color(0.133, 0.545, 0.133, 1)
-
-[node name="VBox" type="VBoxContainer" parent="."]
-layout_mode = 0
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-
-[node name="TopBar" type="HBoxContainer" parent="VBox"]
-custom_minimum_size = Vector2(0, 40)
-layout_mode = 2
-
-[node name="InfoLabel" type="Label" parent="VBox/TopBar"]
-layout_mode = 2
-size_flags_horizontal = 3
-
-[node name="BuyButton" type="Button" parent="VBox/TopBar"]
-layout_mode = 2
-text = "Buy Discard"
-
-[node name="DrawDeckButton" type="Button" parent="VBox/TopBar"]
-layout_mode = 2
-text = "Draw Deck"
-
-[node name="DrawDiscardButton" type="Button" parent="VBox/TopBar"]
-layout_mode = 2
-text = "Draw Discard"
-
-[node name="DiscardSelectedButton" type="Button" parent="VBox/TopBar"]
-layout_mode = 2
-text = "Discard Selected"
-
-[node name="MakeGroupButton" type="Button" parent="VBox/TopBar"]
-layout_mode = 2
-text = "Make Group"
-
-[node name="MakeRunButton" type="Button" parent="VBox/TopBar"]
-layout_mode = 2
-text = "Make Run"
-
-[node name="Table" type="VBoxContainer" parent="VBox"]
-custom_minimum_size = Vector2(0, 140)
-layout_mode = 2
-
-[node name="DeckAndDiscardRow" type="HBoxContainer" parent="VBox/Table"]
-layout_mode = 2
-theme_override_constants/separation = 160
-alignment = 1
-
-[node name="DeckArea" type="VBoxContainer" parent="VBox/Table/DeckAndDiscardRow"]
-layout_mode = 2
-alignment = 1
-
-[node name="DeckView" type="Control" parent="VBox/Table/DeckAndDiscardRow/DeckArea"]
-layout_mode = 2
-
-[node name="DiscardArea" type="VBoxContainer" parent="VBox/Table/DeckAndDiscardRow"]
-layout_mode = 2
-alignment = 1
-
-[node name="DiscardCard" type="HBoxContainer" parent="VBox/Table/DeckAndDiscardRow/DiscardArea"]
-layout_mode = 2
-alignment = 1
-
-[node name="Melds" type="VBoxContainer" parent="VBox/Table"]
-layout_mode = 2
-theme_override_constants/separation = 6
-
-[node name="PlayerHand" type="Control" parent="."]
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
 mouse_filter = 2
-
-[connection signal="pressed" from="VBox/TopBar/BuyButton" to="." method="_on_BuyButton_pressed"]
-[connection signal="pressed" from="VBox/TopBar/DrawDeckButton" to="." method="_on_DrawDeckButton_pressed"]
-[connection signal="pressed" from="VBox/TopBar/DrawDiscardButton" to="." method="_on_DrawDiscardButton_pressed"]
-[connection signal="pressed" from="VBox/TopBar/DiscardSelectedButton" to="." method="_on_DiscardSelectedButton_pressed"]
-[connection signal="pressed" from="VBox/TopBar/MakeGroupButton" to="." method="_on_MakeGroupButton_pressed"]
-[connection signal="pressed" from="VBox/TopBar/MakeRunButton" to="." method="_on_MakeRunButton_pressed"]
