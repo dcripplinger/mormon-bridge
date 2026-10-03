@@ -154,7 +154,7 @@ export function buyDiscard(state: GameState, buyerIndex: number): GameState {
   // Give discard to buyer
   let players = state.players.map((p) =>
     p.index === buyerIndex
-      ? { ...p, hand: sortHand([...p.hand, top]) }
+      ? { ...p, hand: [...p.hand, top] }
       : p,
   )
   let s: GameState = { ...state, players, discardPile: state.discardPile.slice(0, -1) }
@@ -167,7 +167,7 @@ export function buyDiscard(state: GameState, buyerIndex: number): GameState {
       ...s,
       players: s.players.map((p) =>
         p.index === buyerIndex
-          ? { ...p, hand: sortHand([...p.hand, penaltyResult.card]) }
+          ? { ...p, hand: [...p.hand, penaltyResult.card] }
           : p,
       ),
     }
@@ -181,7 +181,7 @@ export function buyDiscard(state: GameState, buyerIndex: number): GameState {
     ...s,
     players: s.players.map((p) =>
       p.index === s.currentPlayerIndex
-        ? { ...p, hand: sortHand([...p.hand, drawResult.card]) }
+        ? { ...p, hand: [...p.hand, drawResult.card] }
         : p,
     ),
     phase: 'play-or-discard',
@@ -200,7 +200,7 @@ export function claimDiscardAsDraw(state: GameState): GameState {
   if (!top) return err(state, 'No discard to claim')
   const players = state.players.map((p) =>
     p.index === state.currentPlayerIndex
-      ? { ...p, hand: sortHand([...p.hand, top]) }
+      ? { ...p, hand: [...p.hand, top] }
       : p,
   )
   return {
@@ -225,7 +225,7 @@ export function drawFromDeck(state: GameState): GameState {
   const { card, state: s } = result
   const players = s.players.map((p) =>
     p.index === s.currentPlayerIndex
-      ? { ...p, hand: sortHand([...p.hand, card]) }
+      ? { ...p, hand: [...p.hand, card] }
       : p,
   )
   return {
@@ -291,7 +291,7 @@ export function goDown(state: GameState, melds: string[][]): GameState {
 
   const players = state.players.map((p) =>
     p.index === state.currentPlayerIndex
-      ? { ...p, hand: sortHand(hand), hasGoneDown: true }
+      ? { ...p, hand, hasGoneDown: true }
       : p,
   )
 
@@ -334,7 +334,7 @@ export function extendMeld(state: GameState, meldId: string, cardId: string): Ga
   )
   const players = state.players.map((p) =>
     p.index === state.currentPlayerIndex
-      ? { ...p, hand: sortHand(newHand) }
+      ? { ...p, hand: newHand }
       : p,
   )
 
@@ -357,7 +357,7 @@ export function discard(state: GameState, cardId: string): GameState {
   const { card, hand: newHand } = result
 
   let players = state.players.map((p) =>
-    p.index === state.currentPlayerIndex ? { ...p, hand: sortHand(newHand) } : p,
+    p.index === state.currentPlayerIndex ? { ...p, hand: newHand } : p,
   )
   const discardPile = [...state.discardPile, card]
   let s: GameState = { ...state, players, discardPile, lastError: null }
@@ -417,7 +417,7 @@ export function runAIStep(state: GameState): GameState {
     case 'draw':
       return drawFromDeck(state)
     case 'play-or-discard': {
-      // Simple AI: discard the last card drawn (highest value = last card after sort, which is a wild if held, otherwise just the last)
+      // Simple AI: discard the most recently drawn card (appended at hand end)
       const hand = player.hand
       // Empty hand should already have ended the round via goDown/extendMeld
       if (hand.length === 0) return finishRound(state)

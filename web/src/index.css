@@ -48,3 +48,8 @@ button:disabled {
   opacity: 0.4;
   cursor: default;
 }
+
+@keyframes card-land {
+  from { transform: scale(0.82); opacity: 0.3; }
+  to   { transform: scale(1);    opacity: 1; }
+}
