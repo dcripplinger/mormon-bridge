@@ -1,11 +1,14 @@
 ## Mormon Bridge - Game Design Overview
 
-This document outlines the gameplay rules and project scope for the Mormon Bridge card game built in Godot 4.4.1. It's a high-level reference for future planning and implementation.
+This document outlines the gameplay rules and project scope for the Mormon Bridge card game. It's a high-level reference for future planning and implementation.
 
 ### Platforms and Tech
-- Target platforms: Android (phone + tablet) and Web (itch.io)
-- Engine: Godot 4.4.1, 2D
-- Repo layout: the Godot project is in `godot/`. Non-runtime assets/docs can live at repo root.
+- Target platforms: Web (itch.io), Android (Google Play), iOS (App Store)
+- Stack: React + Vite + TypeScript (web app); Capacitor shell for Android/iOS
+- Repo layout:
+  - `web/` - Vite + React app (source, build, Capacitor config)
+  - `assets/cards/` - card artwork PNGs (engine-agnostic)
+  - `README.md` - game rules and design (this file)
 
 ### Gameplay summary
 
@@ -87,7 +90,55 @@ Each turn proceeds in this order:
 ### Multiplayer
 - Goal: Online multiplayer with private rooms (room passwords)
 - Simple UX: create/join room, room code/password, ready-up
-- Networking: Godot Multiplayer (WebSocket); host- or server-authoritative turn sync
+- Networking: WebSocket-based; server-authoritative turn sync (planned for a later phase)
+
+### Building and Deploying
+
+#### Development
+
+```bash
+cd web
+npm install
+npm run dev        # local dev server at http://localhost:5173
+npm test           # run Vitest tests
+```
+
+#### itch.io (HTML5)
+
+```bash
+cd web
+npm run build      # produces web/dist/
+# Zip the dist/ folder and upload it to your itch.io project.
+# Set "Kind of project" to HTML and "index file" to index.html.
+zip -r mormon-bridge-web.zip dist/
+```
+
+#### Android (Capacitor)
+
+First-time setup (requires Android Studio installed):
+
+```bash
+cd web
+npm run build
+npx cap add android          # add the android platform (one time)
+npm run cap:sync             # copy web/dist → android/app/src/main/assets + sync plugins
+npm run cap:android          # open in Android Studio to build/sign/deploy
+```
+
+For subsequent releases:
+
+```bash
+npm run build && npm run cap:sync
+# Then build a signed release AAB in Android Studio → upload to Play Console
+```
+
+#### iOS (future, requires macOS + Xcode)
+
+```bash
+npx cap add ios
+npm run build && npx cap sync
+npx cap open ios             # opens Xcode; sign and archive from there
+```
 
 ### AI (initial behavior)
 - Extremely simple AI for early development:

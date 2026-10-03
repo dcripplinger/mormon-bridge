@@ -1,21 +1,32 @@
-# Mormon Bridge - Godot/GDScript Project Rules
+# Mormon Bridge - Web + Capacitor Project Rules
 
 ## Language and Framework
-- This is a Godot game project using GDScript
-- Always use GDScript syntax when writing or modifying `.gd` files
-- Refer to official Godot documentation and GDScript documentation when implementing features
-- Follow Godot best practices for signals, nodes, scenes, and resource management
+- This is a TypeScript + React + Vite project wrapped with Capacitor for mobile
+- Always use TypeScript (not plain JS) for all source files under `web/src/`
+- Refer to the React, Vite, Vitest, and Capacitor docs when implementing features
+- Follow React best practices: hooks, functional components, composition over inheritance
 
 ## Code Style
-- Use TABS for indentation in all `.gd` (GDScript) and `.tscn` (Godot scene) files
-- Tab size: 4 spaces equivalent
-- Follow GDScript naming conventions:
-  - snake_case for variables, functions, and file names
-  - PascalCase for class names
+- Use 2 SPACES for indentation in all `.ts`, `.tsx`, `.css`, and config files
+- Follow TypeScript/React naming conventions:
+  - camelCase for variables and functions
+  - PascalCase for React components, types, and interfaces
   - SCREAMING_SNAKE_CASE for constants
-- Use ASCII characters for quotes, dashes, and punctuation unless specifically required (e.g., use " and ' not " " ' ', use - not – or —)
+  - kebab-case for file names (e.g. `game-rules.ts`, `card-hand.tsx`)
+- Prefer named exports over default exports (except React components which may use default)
+- Use ASCII characters for quotes, dashes, and punctuation (use " and ' not " " ' ')
+
+## Architecture rules
+- `web/src/game/` is a PURE TypeScript module — no React, no DOM, no Capacitor imports allowed here
+- All game state is a plain serializable object (`GameState`); never mutate it in place
+- Game moves are pure functions: `(state: GameState, action: Action) => GameState`
+- `web/src/ui/` contains React components that render game state and dispatch actions
+- `web/src/app/` contains top-level screens (menu, local game, settings)
+- Tests live alongside source files as `*.test.ts` and run via `npm test` (Vitest)
 
 ## Resources
-- Godot Docs: https://docs.godotengine.org/
-- GDScript Reference: https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/
-
+- React: https://react.dev/
+- Vite: https://vitejs.dev/
+- Vitest: https://vitest.dev/
+- Capacitor: https://capacitorjs.com/docs
+- TypeScript: https://www.typescriptlang.org/docs/

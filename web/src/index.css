@@ -1,0 +1,50 @@
+/* ===== CSS Variables ===== */
+:root {
+  --bg: #1a2e1a;
+  --bg-felt: #1e3a1e;
+  --surface: #112211;
+  --surface-2: #1d341d;
+  --border: #2e4d2e;
+  --accent: #c9a84c;
+  --accent-dim: #8a6d2e;
+  --text: #e8dcc8;
+  --text-dim: #9a8a70;
+  --danger: #c0392b;
+  --danger-dim: #7b2018;
+  --hand-bg: #162216;
+  --card-w: 64px;
+  --card-h: 96px;
+  --card-radius: 6px;
+  --selected-lift: -12px;
+  font-size: 15px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Georgia', 'Times New Roman', serif;
+  overflow: hidden;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+  border: none;
+  outline: none;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
