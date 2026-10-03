@@ -1,9 +1,53 @@
 import { describe, it, expect } from 'vitest'
+import type { Card } from './card'
+import type { GameState, Meld, PlayerState } from './state'
 import { createGame, drawFromDeck, buyDiscard, claimDiscardAsDraw, goDown, discard, extendMeld } from './state'
 
 function makeGame(numHumans = 3, numAI = 0) {
   const names = Array.from({ length: numHumans }, (_, i) => `P${i + 1}`)
   return createGame(names, numAI)
+}
+
+function card(id: string, color: Card['color'], number: number): Card {
+  return { id, color, number }
+}
+
+function player(index: number, hand: Card[], extras: Partial<PlayerState> = {}): PlayerState {
+  return {
+    index,
+    displayName: `P${index + 1}`,
+    isAI: false,
+    hand,
+    hasGoneDown: false,
+    cumulativeScore: 0,
+    ...extras,
+  }
+}
+
+/** Minimal in-play state for round-end scenarios (avoids random dealing). */
+function stubPlayState(opts: {
+  hand: Card[]
+  hasGoneDown?: boolean
+  tableMetlds?: Meld[]
+  roundIndex?: number
+}): GameState {
+  const { hand, hasGoneDown = false, tableMetlds = [], roundIndex = 0 } = opts
+  return {
+    players: [
+      player(0, hand, { hasGoneDown }),
+      player(1, [card('other1', 'red', 1)]),
+      player(2, [card('other2', 'yellow', 2)]),
+    ],
+    drawPile: [card('deck1', 'green', 3)],
+    discardPile: [card('disc1', 'black', 4)],
+    tableMetlds,
+    roundIndex,
+    currentPlayerIndex: 0,
+    phase: 'play-or-discard',
+    hasDrawnThisTurn: true,
+    meldIdCounter: tableMetlds.length,
+    lastError: null,
+  }
 }
 
 describe('createGame', () => {
@@ -114,6 +158,18 @@ describe('discard', () => {
     const s2 = discard(s, cardId)
     expect(s2.lastError).toBeTruthy()
   })
+
+  it('ends the round when discarding the last card', () => {
+    const s = stubPlayState({
+      hand: [card('last', 'red', 9)],
+      hasGoneDown: true,
+    })
+    const next = discard(s, 'last')
+    // Round 0 → starts round 1 (buy-window), not stuck in play-or-discard
+    expect(next.roundIndex).toBe(1)
+    expect(next.phase).toBe('buy-window')
+    expect(next.lastError).toBeNull()
+  })
 })
 
 describe('goDown', () => {
@@ -135,6 +191,28 @@ describe('goDown', () => {
     const s2 = goDown(s, oneMeld)
     expect(s2.lastError).toBeTruthy()
   })
+
+  it('ends the round when going down with every remaining card', () => {
+    // Round 1 needs 2 groups; hand is exactly those 6 cards
+    const groupA = [
+      card('r7', 'red', 7),
+      card('y7', 'yellow', 7),
+      card('g7', 'green', 7),
+    ]
+    const groupB = [
+      card('r5', 'red', 5),
+      card('y5', 'yellow', 5),
+      card('b5', 'black', 5),
+    ]
+    const s = stubPlayState({ hand: [...groupA, ...groupB] })
+    const next = goDown(s, [
+      groupA.map((c) => c.id),
+      groupB.map((c) => c.id),
+    ])
+    expect(next.lastError).toBeNull()
+    expect(next.roundIndex).toBe(1)
+    expect(next.phase).toBe('buy-window')
+  })
 })
 
 describe('extendMeld', () => {
@@ -142,5 +220,27 @@ describe('extendMeld', () => {
     let s = drawFromDeck(makeGame())
     const s2 = extendMeld(s, 'nonexistent', s.players[0].hand[0].id)
     expect(s2.lastError).toBeTruthy()
+  })
+
+  it('ends the round when extending with the last card', () => {
+    const meld: Meld = {
+      id: 'meld_0',
+      ownerIndex: 0,
+      type: 'group',
+      cards: [
+        card('r7', 'red', 7),
+        card('y7', 'yellow', 7),
+        card('g7', 'green', 7),
+      ],
+    }
+    const s = stubPlayState({
+      hand: [card('b7', 'black', 7)],
+      hasGoneDown: true,
+      tableMetlds: [meld],
+    })
+    const next = extendMeld(s, 'meld_0', 'b7')
+    expect(next.lastError).toBeNull()
+    expect(next.roundIndex).toBe(1)
+    expect(next.phase).toBe('buy-window')
   })
 })

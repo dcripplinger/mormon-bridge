@@ -295,13 +295,17 @@ export function goDown(state: GameState, melds: string[][]): GameState {
       : p,
   )
 
-  return {
+  const next: GameState = {
     ...state,
     players,
     tableMetlds: [...state.tableMetlds, ...newMelds],
     meldIdCounter: counter,
     lastError: null,
   }
+
+  // Playing the last card(s) ends the round immediately — no discard required
+  if (hand.length === 0) return finishRound(next)
+  return next
 }
 
 /**
@@ -334,7 +338,11 @@ export function extendMeld(state: GameState, meldId: string, cardId: string): Ga
       : p,
   )
 
-  return { ...state, players, tableMetlds, lastError: null }
+  const next: GameState = { ...state, players, tableMetlds, lastError: null }
+
+  // Playing the last card ends the round immediately — no discard required
+  if (newHand.length === 0) return finishRound(next)
+  return next
 }
 
 /**
@@ -411,7 +419,8 @@ export function runAIStep(state: GameState): GameState {
     case 'play-or-discard': {
       // Simple AI: discard the last card drawn (highest value = last card after sort, which is a wild if held, otherwise just the last)
       const hand = player.hand
-      if (hand.length === 0) return state
+      // Empty hand should already have ended the round via goDown/extendMeld
+      if (hand.length === 0) return finishRound(state)
       // Discard the card most recently added (end of sorted hand = wild or highest number)
       const cardToDiscard = hand[hand.length - 1]
       return discard(state, cardToDiscard.id)
