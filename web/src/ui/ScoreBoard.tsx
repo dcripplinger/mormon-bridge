@@ -75,7 +75,7 @@ export default function ScoreBoard({
             marginBottom: '8px',
           }}
         >
-          <div style={{ color: 'var(--accent)', fontWeight: 'bold', fontSize: '1.05rem' }}>
+          <div style={{ color: 'var(--text)', fontWeight: 'bold', fontSize: '1.05rem' }}>
             Round {roundIndex + 1} / 7
           </div>
           <button
@@ -110,7 +110,7 @@ export default function ScoreBoard({
                   : '1px solid transparent',
             }}
           >
-            <div style={{ color: p.hasGoneDown ? 'var(--accent)' : 'var(--text)' }}>
+            <div style={{ color: 'var(--text)' }}>
               {p.displayName}
               {p.isAI ? ' 🤖' : ''}
               {p.hasGoneDown ? ' ✓' : ''}

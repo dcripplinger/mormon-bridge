@@ -258,7 +258,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           gap: '24px',
         }}
       >
-        <h1 style={{ color: 'var(--accent)', fontSize: '2rem' }}>Game Over</h1>
+        <h1 style={{ color: 'var(--text)', fontSize: '2rem' }}>Game Over</h1>
         <div
           style={{
             background: 'var(--surface)',
@@ -269,14 +269,14 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
         >
           {sorted.map((p, rank) => (
             <div key={p.index} style={{ marginBottom: '10px', fontSize: rank === 0 ? '1.2rem' : '1rem' }}>
-              <span style={{ color: rank === 0 ? 'var(--accent)' : 'var(--text)' }}>
+              <span style={{ color: 'var(--text)' }}>
                 {rank + 1}. {p.displayName}
               </span>
               <span style={{ color: 'var(--text-dim)', marginLeft: '12px' }}>
                 {p.cumulativeScore} pts
               </span>
               {rank === 0 && (
-                <span style={{ marginLeft: '8px', color: 'var(--accent)' }}>👑</span>
+                <span style={{ marginLeft: '8px', color: 'var(--text)' }}>👑</span>
               )}
             </div>
           ))}
@@ -360,7 +360,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             flexShrink: 0,
           }}
         >
-          <span style={{ color: 'var(--accent)', fontWeight: 'bold' }}>
+          <span style={{ color: 'var(--text)', fontWeight: 'bold' }}>
             {currentPlayer.displayName}'s turn
           </span>
           <span style={{ color: 'var(--text-dim)' }}>
@@ -544,14 +544,14 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
                 margin: '-6px',
                 borderRadius: '10px',
                 transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
-                background: discardHot ? 'rgba(201, 168, 76, 0.18)' : 'transparent',
+                background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
                 boxShadow: discardHot
-                  ? '0 0 0 3px var(--accent), 0 0 22px rgba(201, 168, 76, 0.45)'
+                  ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
                   : 'none',
                 transform: discardHot ? 'scale(1.06)' : 'scale(1)',
               }}
             >
-              <span style={{ fontSize: '0.7rem', color: discardHot ? 'var(--accent)' : 'var(--text-dim)' }}>
+              <span style={{ fontSize: '0.7rem', color: discardHot ? 'var(--text)' : 'var(--text-dim)' }}>
                 Discard
               </span>
               {top ? (

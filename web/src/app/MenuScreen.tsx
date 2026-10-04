@@ -35,9 +35,8 @@ export default function MenuScreen({ onStart }: Props) {
         <h1
           style={{
             fontSize: 'clamp(2rem, 6vw, 4rem)',
-            color: 'var(--accent)',
+            color: 'var(--text)',
             letterSpacing: '0.04em',
-            textShadow: '0 2px 12px rgba(201,168,76,0.3)',
           }}
         >
           Mormon Bridge

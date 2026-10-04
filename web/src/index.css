@@ -1,3 +1,7 @@
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/500.css';
+@import '@fontsource/dm-sans/700.css';
+
 /* ===== CSS Variables ===== */
 :root {
   --bg: #1a2e1a;
@@ -5,10 +9,10 @@
   --surface: #112211;
   --surface-2: #1d341d;
   --border: #2e4d2e;
-  --accent: #c9a84c;
-  --accent-dim: #8a6d2e;
-  --text: #e8dcc8;
-  --text-dim: #9a8a70;
+  --accent: #e8a422;
+  --accent-dim: #9e6c0f;
+  --text: #f2f4f2;
+  --text-dim: #a8b3a8;
   --danger: #c0392b;
   --danger-dim: #7b2018;
   --card-w: 64px;
@@ -32,7 +36,7 @@ html, body, #root {
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Georgia', 'Times New Roman', serif;
+  font-family: 'DM Sans', system-ui, sans-serif;
   overflow: hidden;
 }
 
