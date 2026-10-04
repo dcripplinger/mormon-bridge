@@ -78,6 +78,8 @@ button:disabled {
   100% { transform: scale(1) translateY(0); }
 }
 
+/* Hand row carousel: animation is a CSS transition on translateY in HandView.tsx — no keyframes needed. */
+
 /* Active-player avatar: gold rim + rotating shimmer halo */
 .avatar-face {
   border-radius: 50%;

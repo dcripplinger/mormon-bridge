@@ -39,6 +39,15 @@ const REORDER_SETTLE_MS = 220
 /** Brief pop on the card once it lands in its new slot. */
 const REORDER_POP_MS = 500
 
+/** Width reserved for the side chevron column when pagination is active. */
+const PAGER_W = 40
+/** Duration of the slide-in animation when changing hand pages. */
+const PAGE_SLIDE_MS = 220
+/** Milliseconds to hover a chevron before triggering a page during drag. */
+const DRAG_HOVER_DELAY_MS = 500
+/** Cooldown between successive drag-hover page triggers. */
+const DRAG_HOVER_COOLDOWN_MS = 500
+
 /** Front row covers 60% of the back row. */
 const ROW_OVERLAP_PULL = 'calc(var(--card-h) * -0.6)'
 /** Soft max gap between cards on a wide screen (px past card width = slight separation). */
@@ -71,34 +80,76 @@ function orderWithInsert(cards: Card[], dragId: string, insertIndex: number): Ca
 }
 
 /**
- * Resolve a drop insert index from the pointer using topmost hand-card under the
- * cursor (works with overlapping rows). Index is relative to `cards` excluding
- * the dragged card (i.e. insert position into the "others" list).
+ * Resolve a drop insert index using row-band locking.
+ *
+ * 1. Determine which row the pointer is in (front row checked first since it
+ *    visually overlaps the back row).
+ * 2. Within that row, compute the insert position from pointer X against each
+ *    card's midpoint — ignoring elementsFromPoint so gaps and empty space in
+ *    the row still resolve cleanly.
+ * 3. Map the row-local position back to a global "others" insert index.
+ *
+ * Index is relative to `cards` excluding the dragged card.
  */
 function insertIndexAtPoint(
   clientX: number,
   clientY: number,
   cards: Card[],
   dragId: string,
+  containerEl: HTMLElement,
 ): number | null {
   const others = cards.filter((c) => c.id !== dragId)
   if (others.length === 0) return 0
 
-  const hits = document.elementsFromPoint(clientX, clientY)
-  for (const el of hits) {
-    const cardEl = (el as HTMLElement).closest?.('[data-hand-card][data-card-id]') as
-      | HTMLElement
-      | null
-    if (!cardEl) continue
-    const id = cardEl.dataset.cardId
-    if (!id || id === dragId) continue
-    const idx = others.findIndex((c) => c.id === id)
-    if (idx < 0) continue
-    const rect = cardEl.getBoundingClientRect()
-    const after = clientX > rect.left + rect.width / 2
-    return after ? idx + 1 : idx
+  // Identify which row band the pointer is in (front row has higher z so check first).
+  const frontRowEl = containerEl.querySelector<HTMLElement>('[data-hand-row="front"]')
+  const backRowEl = containerEl.querySelector<HTMLElement>('[data-hand-row="back"]')
+
+  let targetRowEl: HTMLElement | null = null
+  if (frontRowEl) {
+    const r = frontRowEl.getBoundingClientRect()
+    if (clientY >= r.top && clientY <= r.bottom) targetRowEl = frontRowEl
   }
-  return null
+  if (!targetRowEl && backRowEl) {
+    const r = backRowEl.getBoundingClientRect()
+    if (clientY >= r.top && clientY <= r.bottom) targetRowEl = backRowEl
+  }
+  if (!targetRowEl) return null
+
+  // Collect non-dragged card elements in this row, sorted left→right.
+  const rowCardEls = Array.from(
+    targetRowEl.querySelectorAll<HTMLElement>('[data-hand-card][data-card-id]'),
+  )
+    .filter((el) => el.dataset.cardId !== dragId)
+    .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+    .sort((a, b) => a.rect.left - b.rect.left)
+
+  if (rowCardEls.length === 0) return null
+
+  // Find insert slot from pointer X (left-half → before, right-half → after).
+  let rowInsert = rowCardEls.length // default: after all cards in this row
+  for (let i = 0; i < rowCardEls.length; i++) {
+    const { rect } = rowCardEls[i]
+    if (clientX < rect.left + rect.width / 2) {
+      rowInsert = i
+      break
+    }
+  }
+
+  // Map row-local insert index to global others index.
+  if (rowInsert === 0) {
+    const firstId = rowCardEls[0].el.dataset.cardId!
+    const idx = others.findIndex((c) => c.id === firstId)
+    return idx < 0 ? null : idx
+  }
+  if (rowInsert >= rowCardEls.length) {
+    const lastId = rowCardEls[rowCardEls.length - 1].el.dataset.cardId!
+    const idx = others.findIndex((c) => c.id === lastId)
+    return idx < 0 ? null : idx + 1
+  }
+  const targetId = rowCardEls[rowInsert].el.dataset.cardId!
+  const idx = others.findIndex((c) => c.id === targetId)
+  return idx < 0 ? null : idx
 }
 
 interface HandRowProps {
@@ -117,6 +168,8 @@ interface HandRowProps {
   zBase: number
   step: number
   cardW: number
+  /** Identifies this row for drag row-band hit-testing ('hidden' = off-screen, no hit-test). */
+  rowName: 'back' | 'front' | 'hidden'
 }
 
 function HandRow({
@@ -133,11 +186,13 @@ function HandRow({
   zBase,
   step,
   cardW,
+  rowName,
 }: HandRowProps) {
   const pullIn = Math.max(0, cardW - step)
 
   return (
     <div
+      data-hand-row={rowName}
       style={{
         display: 'flex',
         flexWrap: 'nowrap',
@@ -232,7 +287,7 @@ export default function HandView({
   const measureRef = useRef<HTMLDivElement | null>(null)
   const [cardW, setCardW] = useState(64)
   const [availableW, setAvailableW] = useState(320)
-  const [page, setPage] = useState(0)
+  const [rowOffset, setRowOffset] = useState(0)
   const pendingIds = inflightCardIds ?? EMPTY_ID_SET
 
   // Drag state
@@ -257,23 +312,35 @@ export default function HandView({
     ghostY: number
   } | null>(null)
 
+  // Refs for side chevrons — used for drag hover-to-page
+  const prevChevronRef = useRef<HTMLButtonElement | null>(null)
+  const nextChevronRef = useRef<HTMLButtonElement | null>(null)
+  const hoverChevronRef = useRef<'prev' | 'next' | null>(null)
+  const hoverChevronTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const displayCards = previewCards ?? cards
-  const pageCount = Math.max(1, Math.ceil(displayCards.length / HAND_PAGE_SIZE))
-  const safePage = Math.min(page, pageCount - 1)
+  // Each pager step moves by exactly one row. Compute the max valid row offset
+  // so the last visible row is always the last row that has cards.
+  const rowCount = Math.ceil(displayCards.length / CARDS_PER_ROW)
+  const maxRowOffset = Math.max(0, rowCount - ROWS_PER_PAGE)
+  const safeRowOffset = Math.min(rowOffset, maxRowOffset)
+  const showPager = displayCards.length > HAND_PAGE_SIZE
   const canInteract = canSelect || canReorder || canDiscard
 
-  // Keep page in range when the hand shrinks.
+  // Keep row offset in range when the hand shrinks.
   useEffect(() => {
-    if (page > pageCount - 1) setPage(pageCount - 1)
-  }, [page, pageCount])
+    if (rowOffset > maxRowOffset) setRowOffset(maxRowOffset)
+  }, [rowOffset, maxRowOffset])
 
-  // Jump to the page that contains the active flight / landing card so the slot stays measurable.
+  // Scroll to the row that contains the active flight / landing card so the slot stays measurable.
   useEffect(() => {
     const focusId = activeFlightCardId ?? landingCardId
     if (!focusId) return
     const idx = cards.findIndex((c) => c.id === focusId)
     if (idx < 0) return
-    setPage(Math.floor(idx / HAND_PAGE_SIZE))
+    const targetRow = Math.floor(idx / CARDS_PER_ROW)
+    const maxRO = Math.max(0, Math.ceil(cards.length / CARDS_PER_ROW) - ROWS_PER_PAGE)
+    setRowOffset(Math.max(0, Math.min(maxRO, targetRow)))
   }, [activeFlightCardId, landingCardId, cards])
 
   // Sync preview if underlying cards change mid-drag (e.g. flight lands).
@@ -296,11 +363,12 @@ export default function HandView({
     const ro = new ResizeObserver(update)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [displayCards.length, safePage])
+  }, [displayCards.length, safeRowOffset])
 
   useEffect(() => () => {
     if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current)
     if (popTimerRef.current !== null) clearTimeout(popTimerRef.current)
+    if (hoverChevronTimerRef.current !== null) clearTimeout(hoverChevronTimerRef.current)
   }, [])
 
   // Latest props/state for window pointer handlers (stable effect).
@@ -314,6 +382,9 @@ export default function HandView({
     onDiscardCard,
     onDiscardHoverChange,
     onToggle,
+    maxRowOffset,
+    safeRowOffset,
+    showPager,
   })
   latestRef.current = {
     cards,
@@ -325,6 +396,9 @@ export default function HandView({
     onDiscardCard,
     onDiscardHoverChange,
     onToggle,
+    maxRowOffset,
+    safeRowOffset,
+    showPager,
   }
 
   useEffect(() => {
@@ -333,6 +407,11 @@ export default function HandView({
       setPreviewCards(null)
       setGhostPos(null)
       setIsSettling(false)
+      if (hoverChevronTimerRef.current !== null) {
+        clearTimeout(hoverChevronTimerRef.current)
+        hoverChevronTimerRef.current = null
+      }
+      hoverChevronRef.current = null
     }
 
     const playSettlePop = (cardId: string) => {
@@ -387,6 +466,30 @@ export default function HandView({
           }, REORDER_SETTLE_MS)
         })
       })
+    }
+
+    /**
+     * Called when the pointer first enters a chevron while dragging.
+     * Pages after DRAG_HOVER_DELAY_MS, then again every DRAG_HOVER_COOLDOWN_MS
+     * as long as the pointer stays on that chevron.
+     */
+    function triggerHoverPage(target: 'prev' | 'next') {
+      hoverChevronTimerRef.current = setTimeout(() => {
+        hoverChevronTimerRef.current = null
+        if (hoverChevronRef.current !== target) return
+        const L = latestRef.current
+        const canGo = target === 'prev' ? L.safeRowOffset > 0 : L.safeRowOffset < L.maxRowOffset
+        if (canGo) {
+          setRowOffset((r) =>
+            target === 'prev' ? Math.max(0, r - 1) : Math.min(L.maxRowOffset, r + 1),
+          )
+        }
+        // Cooldown, then re-trigger if pointer is still hovering.
+        hoverChevronTimerRef.current = setTimeout(() => {
+          hoverChevronTimerRef.current = null
+          if (hoverChevronRef.current === target) triggerHoverPage(target)
+        }, DRAG_HOVER_COOLDOWN_MS)
+      }, DRAG_HOVER_DELAY_MS)
     }
 
     const finish = (commit: 'reorder' | 'discard' | 'cancel' | 'click') => {
@@ -454,7 +557,10 @@ export default function HandView({
       }
 
       if (!overDiscard && L.canReorder) {
-        const insertAt = insertIndexAtPoint(e.clientX, e.clientY, drag.order, drag.cardId)
+        const containerEl = measureRef.current
+        const insertAt = containerEl
+          ? insertIndexAtPoint(e.clientX, e.clientY, drag.order, drag.cardId, containerEl)
+          : null
         if (insertAt !== null) {
           const next = orderWithInsert(drag.order, drag.cardId, insertAt)
           const changed = next.some((c, i) => c.id !== drag.order[i]?.id)
@@ -462,6 +568,27 @@ export default function HandView({
             drag.order = next
             setPreviewCards(next)
           }
+        }
+      }
+
+      // Drag hover-to-page: detect when pointer lingers over a side chevron.
+      if (L.showPager) {
+        let newHover: 'prev' | 'next' | null = null
+        if (L.safeRowOffset > 0 && prevChevronRef.current) {
+          if (pointInRect(e.clientX, e.clientY, prevChevronRef.current.getBoundingClientRect()))
+            newHover = 'prev'
+        }
+        if (!newHover && L.safeRowOffset < L.maxRowOffset && nextChevronRef.current) {
+          if (pointInRect(e.clientX, e.clientY, nextChevronRef.current.getBoundingClientRect()))
+            newHover = 'next'
+        }
+        if (newHover !== hoverChevronRef.current) {
+          if (hoverChevronTimerRef.current !== null) {
+            clearTimeout(hoverChevronTimerRef.current)
+            hoverChevronTimerRef.current = null
+          }
+          hoverChevronRef.current = newHover
+          if (newHover !== null) triggerHoverPage(newHover)
         }
       }
     }
@@ -488,6 +615,10 @@ export default function HandView({
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
+      if (hoverChevronTimerRef.current !== null) {
+        clearTimeout(hoverChevronTimerRef.current)
+        hoverChevronTimerRef.current = null
+      }
     }
   }, [])
 
@@ -521,25 +652,38 @@ export default function HandView({
     }
   }
 
-  const pageStart = safePage * HAND_PAGE_SIZE
-  const pageCards = displayCards.slice(pageStart, pageStart + HAND_PAGE_SIZE)
-  const backRow = pageCards.slice(0, CARDS_PER_ROW)
-  const frontRow = pageCards.slice(CARDS_PER_ROW, HAND_PAGE_SIZE)
-  const hasFrontRow = frontRow.length > 0
+  /** Shift the visible window by one row; the CSS transition animates the strip. */
+  const goPage = (dir: 'prev' | 'next') => {
+    setRowOffset((r) =>
+      dir === 'prev' ? Math.max(0, r - 1) : Math.min(maxRowOffset, r + 1),
+    )
+  }
+
+  // Build every row from displayCards; the strip renders them all and a clip
+  // viewport shows only the two visible ones.  Scrolling is pure CSS transform.
+  const allRows = Array.from({ length: rowCount }, (_, i) =>
+    displayCards.slice(i * CARDS_PER_ROW, (i + 1) * CARDS_PER_ROW),
+  )
+  const hasFrontRow = displayCards.length > CARDS_PER_ROW
 
   // < 14 total: relax spacing for the actual count.
   // >= 14 total: lock spacing to a full 14-card row and reuse it on every row.
   const packingCount =
     displayCards.length < CARDS_PER_ROW ? Math.max(displayCards.length, 1) : CARDS_PER_ROW
-  const step = computeStep(availableW, cardW, packingCount)
+  // When the pager is visible it floats over the right edge; reserve enough
+  // width so the centred hand block clears the chevron column.
+  // The pager (width PAGER_W, right:-10) has its left edge at
+  //   measureRef.right − (PAGER_W − 10) = measureRef.right − 30 px.
+  // For a centred block to stay left of that, cardLayoutW must be reduced by
+  //   2 × 30 = 60 px (centering halves the one-sided margin).
+  // The hand block is still centred against the full measureRef width, so
+  // optical centering is unaffected.
+  const cardLayoutW = showPager ? Math.max(0, availableW - (PAGER_W - 10) * 2) : availableW
+  const step = computeStep(cardLayoutW, cardW, packingCount)
 
   // Block is always the width of a full packing row so partial front rows
   // share the same left edge; the block itself stays centered in the panel.
   const handBlockWidth = rowPixelWidth(cardW, step, packingCount)
-
-  const showPager = displayCards.length > HAND_PAGE_SIZE
-  const rangeStart = displayCards.length === 0 ? 0 : pageStart + 1
-  const rangeEnd = pageStart + pageCards.length
 
   const draggedCard = draggingId
     ? displayCards.find((c) => c.id === draggingId) ?? null
@@ -556,113 +700,201 @@ export default function HandView({
         pointerEvents: 'none',
       }}
     >
-      {showPager && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '10px',
-            marginBottom: '4px',
-            pointerEvents: 'auto',
-          }}
-        >
-          <button
-            type="button"
-            aria-label="Previous hand page"
-            disabled={safePage <= 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            style={{
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              width: '36px',
-              height: '32px',
-              fontSize: '1rem',
-              lineHeight: 1,
-            }}
-          >
-            ‹
-          </button>
-          <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem', minWidth: '7.5rem', textAlign: 'center' }}>
-            {rangeStart}–{rangeEnd} of {displayCards.length}
-          </span>
-          <button
-            type="button"
-            aria-label="Next hand page"
-            disabled={safePage >= pageCount - 1}
-            onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-            style={{
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              width: '36px',
-              height: '32px',
-              fontSize: '1rem',
-              lineHeight: 1,
-            }}
-          >
-            ›
-          </button>
-        </div>
-      )}
-
-      {/* Full-width rail used only to measure panel width; hand block is centered inside. */}
-      <div ref={measureRef} style={{ width: '100%' }}>
+      {/*
+        Measurement rail — full available width so the hand block centers itself
+        on the whole screen, regardless of whether the pager is present.
+        The pager floats as an absolute overlay at the right edge.
+      */}
+      <div ref={measureRef} style={{ width: '100%', position: 'relative' }}>
+        {/*
+          Hand block — centered on the full measureRef width.
+          Each row is absolutely positioned so it can move to its own target
+          slot independently. Visible rows land at 0 (back) and 0.4×card-h
+          (front); hidden rows park at -1×card-h (above) or 1.4×card-h
+          (below). `transition: transform` on every row makes all three
+          positions animate simultaneously — a true carousel with no DOM
+          teardown and no bleed-through from adjacent rows.
+        */}
         <div
           style={{
             width: handBlockWidth > 0 ? handBlockWidth : '100%',
             maxWidth: '100%',
             margin: '0 auto',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'stretch',
             paddingTop: '14px',
             minHeight: hasFrontRow
               ? 'calc(var(--card-h) * 1.4 + 14px)'
               : 'calc(var(--card-h) + 14px)',
           }}
         >
-          {/* Back row (cards 1–14 of the page) */}
-          <HandRow
-            cards={backRow}
-            selectedIds={selectedIds}
-            onCardPointerDown={onCardPointerDown}
-            canInteract={canInteract && !isSettling}
-            inflightCardIds={pendingIds}
-            activeFlightCardId={activeFlightCardId}
-            endSlotRef={endSlotRef}
-            landingCardId={landingCardId}
-            settlePopId={settlePopId}
-            draggingId={draggingId}
-            zBase={0}
-            step={step}
-            cardW={cardW}
-          />
+          {/*
+            Clip container: sized to exactly the two-row visible area.
+            `overflow: hidden` ensures rows outside that area are invisible.
+          */}
+          <div
+            style={{
+              position: 'relative',
+              overflow: 'hidden',
+              height: hasFrontRow ? 'calc(var(--card-h) * 1.4)' : 'var(--card-h)',
+            }}
+          >
+            {allRows.map((rowCards, i) => {
+              const isVisible = i >= safeRowOffset && i < safeRowOffset + ROWS_PER_PAGE
+              const rowName = i === safeRowOffset ? 'back' as const
+                : i === safeRowOffset + 1 ? 'front' as const
+                : 'hidden' as const
 
-          {/* Front row overlaps the back row by half a card; higher z for hit-testing. */}
-          {hasFrontRow && (
-            <div style={{ marginTop: ROW_OVERLAP_PULL }}>
-              <HandRow
-                cards={frontRow}
-                selectedIds={selectedIds}
-                onCardPointerDown={onCardPointerDown}
-                canInteract={canInteract && !isSettling}
-                inflightCardIds={pendingIds}
-                activeFlightCardId={activeFlightCardId}
-                endSlotRef={endSlotRef}
-                landingCardId={landingCardId}
-                settlePopId={settlePopId}
-                draggingId={draggingId}
-                zBase={CARDS_PER_ROW}
-                step={step}
-                cardW={cardW}
-              />
-            </div>
-          )}
+              // Target vertical position for this row:
+              //   back row  → 0
+              //   front row → 0.4 × card-h  (overlap pull)
+              //   above clip → -1 × card-h  (parked fully above)
+              //   below clip → 1.4 × card-h (parked fully below)
+              const translateY =
+                i < safeRowOffset
+                  ? 'calc(var(--card-h) * -1)'
+                  : i === safeRowOffset
+                    ? '0px'
+                    : i === safeRowOffset + 1
+                      ? 'calc(var(--card-h) * 0.4)'
+                      : 'calc(var(--card-h) * 1.4)'
+
+              return (
+                <div
+                  key={i}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${translateY})`,
+                    transition: `transform ${PAGE_SLIDE_MS}ms ease`,
+                    pointerEvents: isVisible ? undefined : 'none',
+                  }}
+                >
+                  <HandRow
+                    cards={rowCards}
+                    selectedIds={selectedIds}
+                    onCardPointerDown={onCardPointerDown}
+                    canInteract={isVisible && canInteract && !isSettling}
+                    inflightCardIds={pendingIds}
+                    activeFlightCardId={activeFlightCardId}
+                    endSlotRef={endSlotRef}
+                    landingCardId={landingCardId}
+                    settlePopId={settlePopId}
+                    draggingId={draggingId}
+                    zBase={i * CARDS_PER_ROW}
+                    step={step}
+                    cardW={cardW}
+                    rowName={rowName}
+                  />
+                </div>
+              )
+            })}
+          </div>
         </div>
+
+        {/* Side pager — floats at the right edge. Each button fills half the
+            container so the entire half is clickable/hoverable; the visible
+            circle is an inner <span> centered inside that hit area. */}
+        {showPager && (
+          <div
+            style={{
+              position: 'absolute',
+              right: -10,
+              top: 0,
+              bottom: 0,
+              width: PAGER_W,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'stretch',
+              pointerEvents: 'auto',
+            }}
+          >
+            {/*
+              Each button fills its half of the container (flex: 1) for a large
+              hit area.  The visible circle is pinned toward the centre of the
+              container — prev uses alignItems: flex-end + paddingBottom and
+              next uses alignItems: flex-start + paddingTop — so both circles
+              sit near the vertical midpoint with a 24 px gap between them,
+              matching where they were before.
+            */}
+            <button
+              ref={prevChevronRef}
+              type="button"
+              aria-label="Previous hand page"
+              disabled={safeRowOffset <= 0}
+              onClick={() => goPage('prev')}
+              style={{
+                flex: 1,
+                width: '100%',
+                display: 'flex',
+                alignItems: 'flex-end',
+                justifyContent: 'center',
+                paddingBottom: '12px',
+                background: 'transparent',
+                border: 'none',
+                cursor: safeRowOffset <= 0 ? 'default' : 'pointer',
+              }}
+            >
+              <span
+                style={{
+                  width: '22px',
+                  height: '22px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'var(--surface-2)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '50%',
+                  opacity: safeRowOffset <= 0 ? 0.4 : 1,
+                  pointerEvents: 'none',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M3 10 L8 5 L13 10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </span>
+            </button>
+            <button
+              ref={nextChevronRef}
+              type="button"
+              aria-label="Next hand page"
+              disabled={safeRowOffset >= maxRowOffset}
+              onClick={() => goPage('next')}
+              style={{
+                flex: 1,
+                width: '100%',
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'center',
+                paddingTop: '12px',
+                background: 'transparent',
+                border: 'none',
+                cursor: safeRowOffset >= maxRowOffset ? 'default' : 'pointer',
+              }}
+            >
+              <span
+                style={{
+                  width: '22px',
+                  height: '22px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'var(--surface-2)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '50%',
+                  opacity: safeRowOffset >= maxRowOffset ? 0.4 : 1,
+                  pointerEvents: 'none',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M3 6 L8 11 L13 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Drag ghost — follows the pointer; settles into the slot on release */}

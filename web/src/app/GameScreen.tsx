@@ -686,7 +686,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               left: '50%',
               bottom: SEAT_EDGE_INSET_PX,
               transform: 'translateX(-50%)',
-              zIndex: 20,
+              zIndex: 50,
               pointerEvents: 'none',
               lineHeight: 0,
             }}
