@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import type { Card } from '../game/card'
 import type { GameState } from '../game/state'
 import {
+  buyDiscard,
+  canBuyDiscard,
   claimDiscardAsDraw,
   discard,
   drawFromDeck,
@@ -29,6 +31,7 @@ interface Props {
 }
 
 type Action =
+  | { type: 'BUY'; buyerIndex: number }
   | { type: 'CLAIM_DISCARD' }
   | { type: 'DRAW_DECK' }
   | { type: 'EXTEND'; meldId: string; cardId: string }
@@ -37,6 +40,8 @@ type Action =
 
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
+    case 'BUY':
+      return buyDiscard(state, action.buyerIndex)
     case 'CLAIM_DISCARD':
       return claimDiscardAsDraw(state)
     case 'DRAW_DECK':
@@ -154,6 +159,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     if (state.phase === 'game-end' || state.phase === 'round-end') return
     if (!currentPlayer.isAI) return
 
+    // Give the human time to buy if they're eligible; otherwise keep snappy.
+    const aiDelay =
+      humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) ? 2800 : 700
+
     const timer = setTimeout(() => {
       if (state.phase === 'buy-window' || state.phase === 'draw') {
         const rect = deckWrapRef.current?.getBoundingClientRect()
@@ -194,10 +203,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           pendingAction: { type: 'DISCARD', cardId: card.id },
         })
       }
-    }, 700)
+    }, aiDelay)
 
     return () => clearTimeout(timer)
-  }, [state, currentPlayer, animBusy, handAnchorRefs, enqueueFlight])
+  }, [state, currentPlayer, animBusy, humanPlayerIndex, handAnchorRefs, enqueueFlight])
 
   const toggleCard = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -244,6 +253,47 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       })
     }
   }, [state, enqueueFlight])
+
+  const handleBuy = useCallback(() => {
+    if (humanPlayerIndex === -1) return
+    const discardRect = discardWrapRef.current?.getBoundingClientRect()
+    const deckRect = deckWrapRef.current?.getBoundingClientRect()
+    const topCard = topDiscard(state)
+
+    // Peek at the result to learn the penalty card's identity before dispatching.
+    const nextState = buyDiscard(state, humanPlayerIndex)
+    const oldHandIds = new Set(state.players[humanPlayerIndex].hand.map((c) => c.id))
+    const penaltyCard =
+      nextState.players[humanPlayerIndex].hand.find(
+        (c) => c.id !== topCard?.id && !oldHandIds.has(c.id),
+      ) ?? null
+
+    // Dispatch now — both new cards are immediately in state but will be hidden
+    // by inflightCardIds while their flights are queued.
+    dispatch({ type: 'BUY', buyerIndex: humanPlayerIndex })
+
+    // Flight 1: discard card from discard pile → hand
+    if (discardRect && topCard) {
+      enqueueFlight({
+        card: topCard,
+        sourceRect: discardRect,
+        targetRef: endSlotRef,
+        faceDown: false,
+        viaCenter: true,
+      })
+    }
+
+    // Flight 2: penalty card from deck → hand (sequential after flight 1)
+    if (deckRect && penaltyCard) {
+      enqueueFlight({
+        card: penaltyCard,
+        sourceRect: deckRect,
+        targetRef: endSlotRef,
+        faceDown: false,
+        viaCenter: true,
+      })
+    }
+  }, [state, humanPlayerIndex, enqueueFlight])
 
   const handleExtend = (meldId: string) => {
     if (selectedIds.size !== 1) {
@@ -353,6 +403,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
 
   const canDrawDeck = isHumanTurn && (isBuyWindow || state.phase === 'draw') && !animBusy
   const canClaimDiscard = isHumanTurn && isBuyWindow && !animBusy
+  const canBuy = humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) && !animBusy
   const canDiscardDrag = isHumanTurn && isPlayOrDiscard && !animBusy
   const canReorderHand = humanPlayerIndex !== -1 && !animBusy
   const canSelectCards = isHumanTurn && isPlayOrDiscard && !animBusy
@@ -427,7 +478,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           )
         })}
 
-        {/* Draw + discard — center of the table */}
+        {/* Draw + discard + Buy — center of the table */}
         <div
           style={{
             position: 'absolute',
@@ -435,63 +486,90 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             top: '42%',
             transform: 'translate(-50%, -50%)',
             display: 'flex',
-            gap: '28px',
-            alignItems: 'flex-end',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '10px',
             zIndex: 1,
             pointerEvents: 'none',
           }}
         >
-          <div
-            ref={deckWrapRef}
-            style={{
-              pointerEvents: 'auto',
-              padding: '6px',
-              margin: '-6px',
-            }}
-          >
-            <CardPile
-              count={state.drawPile.length}
-              card={
-                state.drawPile.length > 0
-                  ? { id: 'deck', color: 'wild', number: 0 }
-                  : null
-              }
-              faceDown
-              onActivate={canDrawDeck ? () => handleDrawDeck() : undefined}
-              canDrag={canDrawDeck}
-              onDragDraw={canDrawDeck ? handleDrawDeck : undefined}
-            />
+          {/* Piles row — deck and discard bottom-aligned */}
+          <div style={{ display: 'flex', gap: '28px', alignItems: 'flex-end' }}>
+            <div
+              ref={deckWrapRef}
+              style={{
+                pointerEvents: 'auto',
+                padding: '6px',
+                margin: '-6px',
+              }}
+            >
+              <CardPile
+                count={state.drawPile.length}
+                card={
+                  state.drawPile.length > 0
+                    ? { id: 'deck', color: 'wild', number: 0 }
+                    : null
+                }
+                faceDown
+                onActivate={canDrawDeck ? () => handleDrawDeck() : undefined}
+                canDrag={canDrawDeck}
+                onDragDraw={canDrawDeck ? handleDrawDeck : undefined}
+              />
+            </div>
+
+            <div
+              ref={discardWrapRef}
+              data-discard-zone
+              style={{
+                pointerEvents: 'auto',
+                padding: '6px',
+                margin: '-6px',
+                borderRadius: '10px',
+                transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
+                background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
+                boxShadow: discardHot
+                  ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
+                  : 'none',
+                transform: discardHot ? 'scale(1.06)' : 'scale(1)',
+              }}
+            >
+              <CardPile
+                count={state.discardPile.length}
+                card={top}
+                underCard={
+                  state.discardPile.length > 1
+                    ? state.discardPile[state.discardPile.length - 2]
+                    : null
+                }
+                onActivate={canClaimDiscard ? () => handleClaimDiscard() : undefined}
+                canDrag={canClaimDiscard}
+                onDragDraw={canClaimDiscard ? handleClaimDiscard : undefined}
+              />
+            </div>
           </div>
 
-          <div
-            ref={discardWrapRef}
-            data-discard-zone
+          {/* Buy button — own row below, aligned under the discard pile */}
+          <button
+            type="button"
+            disabled={!canBuy}
+            onClick={handleBuy}
             style={{
+              alignSelf: 'flex-end',
+              width: 'var(--card-w)',
+              padding: '13px 0',
+              background: 'var(--danger)',
+              color: '#fff',
+              borderRadius: '6px',
+              fontSize: '0.78rem',
+              fontWeight: 700,
+              letterSpacing: '0.05em',
+              textTransform: 'uppercase',
               pointerEvents: 'auto',
-              padding: '6px',
-              margin: '-6px',
-              borderRadius: '10px',
-              transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
-              background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
-              boxShadow: discardHot
-                ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
-                : 'none',
-              transform: discardHot ? 'scale(1.06)' : 'scale(1)',
+              animation: canBuy ? 'buy-pulse 1.4s ease-in-out infinite alternate' : 'none',
             }}
           >
-            <CardPile
-              count={state.discardPile.length}
-              card={top}
-              underCard={
-                state.discardPile.length > 1
-                  ? state.discardPile[state.discardPile.length - 2]
-                  : null
-              }
-              onActivate={canClaimDiscard ? () => handleClaimDiscard() : undefined}
-              canDrag={canClaimDiscard}
-              onDragDraw={canClaimDiscard ? handleClaimDiscard : undefined}
-            />
-          </div>
+            BUY IT!
+          </button>
         </div>
       </div>
 
