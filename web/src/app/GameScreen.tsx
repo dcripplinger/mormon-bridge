@@ -1,23 +1,22 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import type { Card } from '../game/card'
 import type { GameState } from '../game/state'
 import {
-  buyDiscard,
-  canBuyDiscard,
   claimDiscardAsDraw,
   discard,
   drawFromDeck,
   extendMeld,
-  goDown,
   reorderHand,
-  runAIStep,
   topDiscard,
 } from '../game/state'
-import { ROUND_REQUIREMENTS } from '../game/rules'
 import CardPile from '../ui/CardPile'
-import HandView from '../ui/HandView'
 import DrawFlight from '../ui/DrawFlight'
+import HandView from '../ui/HandView'
+import OpponentSeat from '../ui/OpponentSeat'
 import ScoreBoard from '../ui/ScoreBoard'
 import TableView from '../ui/TableView'
+import { placeOpponents } from '../ui/seat-layout'
+import { usePortrait } from '../ui/use-portrait'
 
 interface Props {
   initialState: GameState
@@ -25,24 +24,18 @@ interface Props {
 }
 
 type Action =
-  | { type: 'BUY'; buyerIndex: number }
   | { type: 'CLAIM_DISCARD' }
   | { type: 'DRAW_DECK' }
-  | { type: 'GO_DOWN'; melds: string[][] }
   | { type: 'EXTEND'; meldId: string; cardId: string }
   | { type: 'DISCARD'; cardId: string }
   | { type: 'REORDER'; playerIndex: number; orderedIds: string[] }
 
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
-    case 'BUY':
-      return buyDiscard(state, action.buyerIndex)
     case 'CLAIM_DISCARD':
       return claimDiscardAsDraw(state)
     case 'DRAW_DECK':
       return drawFromDeck(state)
-    case 'GO_DOWN':
-      return goDown(state, action.melds)
     case 'EXTEND':
       return extendMeld(state, action.meldId, action.cardId)
     case 'DISCARD':
@@ -55,8 +48,15 @@ function reducer(state: GameState, action: Action): GameState {
 }
 
 interface FlightItem {
-  card: import('../game/card').Card
+  card: Card
   sourceRect: DOMRect
+  targetRef: React.RefObject<HTMLElement | null>
+  faceDown?: boolean
+  viaCenter?: boolean
+  /** Card already in this player's hand — hide from seat until flight lands. */
+  arrivalPlayerIndex?: number
+  /** Dispatch after the card arrives (AI discard). */
+  pendingAction?: Action
 }
 
 export default function GameScreen({ initialState, onReturnToMenu }: Props) {
@@ -65,60 +65,120 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
   const [targetMeldId, setTargetMeldId] = useState<string | null>(null)
   const [scoresOpen, setScoresOpen] = useState(false)
   const [discardHot, setDiscardHot] = useState(false)
+  const portrait = usePortrait()
 
-  // ---- draw animation state ----
+  // ---- draw / discard animation state ----
   const [flightQueue, setFlightQueue] = useState<FlightItem[]>([])
+  const flightQueueRef = useRef<FlightItem[]>([])
   const [landingCardId, setLandingCardId] = useState<string | null>(null)
+  /** Visual-only: card leaving an opponent seat before DISCARD is applied. */
+  const [pendingDiscard, setPendingDiscard] = useState<{
+    playerIndex: number
+    cardId: string
+  } | null>(null)
   const landingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Refs for measuring source positions
   const deckWrapRef = useRef<HTMLDivElement | null>(null)
   const discardWrapRef = useRef<HTMLDivElement | null>(null)
-  // Ref for the hand-end placeholder (landing target for DrawFlight)
   const endSlotRef = useRef<HTMLDivElement | null>(null)
+  const handAnchorRefs = useMemo(
+    () =>
+      Array.from({ length: initialState.players.length }, () => ({
+        current: null as HTMLDivElement | null,
+      })),
+    [initialState.players.length],
+  )
 
   const activeFlightItem = flightQueue[0] ?? null
   const isFlying = activeFlightItem !== null
+  const animBusy = isFlying || pendingDiscard !== null
 
-  const handleFlightComplete = useCallback(() => {
-    setFlightQueue((prev) => {
-      const [done, ...rest] = prev
-      if (done) {
-        // Clear any existing landing timer
-        if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current)
-        setLandingCardId(done.card.id)
-        landingTimerRef.current = setTimeout(() => setLandingCardId(null), 320)
-      }
-      return rest
-    })
+  const enqueueFlight = useCallback((item: FlightItem) => {
+    flightQueueRef.current = [...flightQueueRef.current, item]
+    setFlightQueue(flightQueueRef.current)
   }, [])
 
-  // Clean up landing timer on unmount
+  const handleFlightComplete = useCallback(() => {
+    const [done, ...rest] = flightQueueRef.current
+    if (!done) return
+    // Keep the ref in sync before any re-entrant completion callbacks.
+    flightQueueRef.current = rest
+    setFlightQueue(rest)
+
+    if (done.pendingAction) {
+      dispatch(done.pendingAction)
+      setPendingDiscard(null)
+      return
+    }
+    if (done.arrivalPlayerIndex === undefined) {
+      if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current)
+      setLandingCardId(done.card.id)
+      landingTimerRef.current = setTimeout(() => setLandingCardId(null), 320)
+    }
+  }, [])
+
   useEffect(() => () => {
     if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current)
   }, [])
 
   const currentPlayer = state.players[state.currentPlayerIndex]
   const top = topDiscard(state)
-  const req = ROUND_REQUIREMENTS[state.roundIndex]
+  const humanPlayerIndex = state.players.findIndex((p) => !p.isAI)
+  const opponentSeats =
+    humanPlayerIndex === -1
+      ? []
+      : placeOpponents(state.players.length, humanPlayerIndex, portrait)
 
-  // Run AI turns automatically
+  // Run AI turns automatically (paused while a card is in flight)
   useEffect(() => {
+    if (animBusy) return
     if (state.phase === 'game-end' || state.phase === 'round-end') return
     if (!currentPlayer.isAI) return
+
     const timer = setTimeout(() => {
-      const next = runAIStep(state)
-      if (next !== state) {
-        if (state.phase === 'buy-window') dispatch({ type: 'DRAW_DECK' })
-        else if (state.phase === 'draw') dispatch({ type: 'DRAW_DECK' })
-        else if (state.phase === 'play-or-discard') {
-          const card = currentPlayer.hand[currentPlayer.hand.length - 1]
-          if (card) dispatch({ type: 'DISCARD', cardId: card.id })
+      if (state.phase === 'buy-window' || state.phase === 'draw') {
+        const rect = deckWrapRef.current?.getBoundingClientRect()
+        const topCard =
+          state.drawPile.length > 0
+            ? state.drawPile[state.drawPile.length - 1]
+            : null
+        const targetRef = handAnchorRefs[currentPlayer.index]
+        dispatch({ type: 'DRAW_DECK' })
+        if (rect && topCard && targetRef) {
+          enqueueFlight({
+            card: topCard,
+            sourceRect: rect,
+            targetRef,
+            faceDown: true,
+            viaCenter: true,
+            arrivalPlayerIndex: currentPlayer.index,
+          })
         }
+        return
       }
-    }, 800)
+
+      if (state.phase === 'play-or-discard') {
+        const hand = currentPlayer.hand
+        if (hand.length === 0) return
+        const card = hand[hand.length - 1]
+        const seatEl = handAnchorRefs[currentPlayer.index]?.current
+        const sourceRect =
+          seatEl?.getBoundingClientRect() ??
+          new DOMRect(window.innerWidth / 2, window.innerHeight / 2, 64, 96)
+        setPendingDiscard({ playerIndex: currentPlayer.index, cardId: card.id })
+        enqueueFlight({
+          card,
+          sourceRect,
+          targetRef: discardWrapRef,
+          faceDown: false,
+          viaCenter: false,
+          pendingAction: { type: 'DISCARD', cardId: card.id },
+        })
+      }
+    }, 700)
+
     return () => clearTimeout(timer)
-  }, [state, currentPlayer])
+  }, [state, currentPlayer, animBusy, handAnchorRefs, enqueueFlight])
 
   const toggleCard = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -134,8 +194,6 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
     setTargetMeldId(null)
   }
 
-  // ---- draw handlers (queue animation, then dispatch) ----
-
   const handleDrawDeck = useCallback((sourceRect?: DOMRect) => {
     const rect = sourceRect ?? deckWrapRef.current?.getBoundingClientRect()
     const topCard = state.drawPile.length > 0
@@ -143,65 +201,30 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
       : null
     dispatch({ type: 'DRAW_DECK' })
     if (rect && topCard) {
-      setFlightQueue((prev) => [...prev, { card: topCard, sourceRect: rect }])
+      enqueueFlight({
+        card: topCard,
+        sourceRect: rect,
+        targetRef: endSlotRef,
+        faceDown: false,
+        viaCenter: true,
+      })
     }
-  }, [state.drawPile])
+  }, [state.drawPile, enqueueFlight])
 
   const handleClaimDiscard = useCallback((sourceRect?: DOMRect) => {
     const rect = sourceRect ?? discardWrapRef.current?.getBoundingClientRect()
     const topCard = topDiscard(state)
     dispatch({ type: 'CLAIM_DISCARD' })
     if (rect && topCard) {
-      setFlightQueue((prev) => [...prev, { card: topCard, sourceRect: rect }])
+      enqueueFlight({
+        card: topCard,
+        sourceRect: rect,
+        targetRef: endSlotRef,
+        faceDown: false,
+        viaCenter: true,
+      })
     }
-  }, [state])
-
-  const handleBuy = useCallback((buyerIndex: number) => {
-    const discardRect = discardWrapRef.current?.getBoundingClientRect()
-    const deckRect = deckWrapRef.current?.getBoundingClientRect()
-    const topCard = topDiscard(state)
-    // Penalty card is the current top of deck; penalty comes from the same pile
-    // after the discard is removed, but the deck order is the same so use top-1.
-    // If pile only has 1 card and reshuffle would be needed, skip penalty animation.
-    const penaltyCard = state.drawPile.length > 0
-      ? state.drawPile[state.drawPile.length - 1]
-      : null
-    dispatch({ type: 'BUY', buyerIndex })
-    if (discardRect && topCard) {
-      const items: FlightItem[] = [{ card: topCard, sourceRect: discardRect }]
-      if (deckRect && penaltyCard) {
-        items.push({ card: penaltyCard, sourceRect: deckRect })
-      }
-      setFlightQueue((prev) => [...prev, ...items])
-    }
-  }, [state])
-
-  const handleGoDown = () => {
-    if (selectedIds.size === 0) return
-    const ids = [...selectedIds]
-    const totalNeeded = req.groups + req.runs
-    if (ids.length < totalNeeded * 3) {
-      alert(
-        `Select all cards for your groups and runs. Round ${state.roundIndex + 1} needs ${req.groups} group(s) and ${req.runs} run(s).`,
-      )
-      return
-    }
-    const groupSize = req.groups > 0 ? Math.floor(ids.length / totalNeeded) : 0
-    const melds: string[][] = []
-    let i = 0
-    for (let g = 0; g < req.groups; g++) {
-      melds.push(ids.slice(i, i + 3))
-      i += 3
-    }
-    for (let r = 0; r < req.runs; r++) {
-      const remaining = ids.slice(i)
-      melds.push(r < req.runs - 1 ? remaining.slice(0, 4) : remaining)
-      i += 4
-    }
-    void groupSize
-    dispatch({ type: 'GO_DOWN', melds })
-    clearSelection()
-  }
+  }, [state, enqueueFlight])
 
   const handleExtend = (meldId: string) => {
     if (selectedIds.size !== 1) {
@@ -212,8 +235,6 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
     dispatch({ type: 'EXTEND', meldId, cardId })
     clearSelection()
   }
-
-  const humanPlayerIndex = state.players.findIndex((p) => !p.isAI)
 
   const handleReorder = useCallback(
     (orderedIds: string[]) => {
@@ -244,7 +265,6 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
     }
   }, [targetMeldId, selectedIds])
 
-  // ---- render game-end ----
   if (state.phase === 'game-end') {
     const sorted = [...state.players].sort((a, b) => a.cumulativeScore - b.cumulativeScore)
     return (
@@ -302,15 +322,26 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
   const isPlayOrDiscard = state.phase === 'play-or-discard'
   const isBuyWindow = state.phase === 'buy-window'
 
-  const canDrawDeck = isHumanTurn && (isBuyWindow || state.phase === 'draw') && !isFlying
-  const canClaimDiscard = isHumanTurn && isBuyWindow && !isFlying
-  const canDiscardDrag = isHumanTurn && isPlayOrDiscard && !isFlying
-  const canReorderHand = humanPlayerIndex !== -1 && !isFlying
-  const canSelectCards = isHumanTurn && isPlayOrDiscard && !isFlying
+  const canDrawDeck = isHumanTurn && (isBuyWindow || state.phase === 'draw') && !animBusy
+  const canClaimDiscard = isHumanTurn && isBuyWindow && !animBusy
+  const canDiscardDrag = isHumanTurn && isPlayOrDiscard && !animBusy
+  const canReorderHand = humanPlayerIndex !== -1 && !animBusy
+  const canSelectCards = isHumanTurn && isPlayOrDiscard && !animBusy
 
-  const showBuy =
-    humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) && !isFlying
-  const showPlayActions = isHumanTurn && isPlayOrDiscard
+  const arrivalCounts = new Map<number, number>()
+  for (const f of flightQueue) {
+    if (f.arrivalPlayerIndex === undefined) continue
+    arrivalCounts.set(
+      f.arrivalPlayerIndex,
+      (arrivalCounts.get(f.arrivalPlayerIndex) ?? 0) + 1,
+    )
+  }
+
+  const visibleOpponentCount = (playerIndex: number, handLength: number): number => {
+    let n = handLength - (arrivalCounts.get(playerIndex) ?? 0)
+    if (pendingDiscard?.playerIndex === playerIndex) n -= 1
+    return Math.max(0, n)
+  }
 
   return (
     <div
@@ -321,8 +352,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
         background: 'var(--bg-felt)',
       }}
     >
-      {/* ===== TABLE LAYER =====
-          Owns the full playfield. Layout here must never depend on UI chrome. */}
+      {/* ===== TABLE LAYER ===== */}
       <div
         style={{
           position: 'absolute',
@@ -335,8 +365,8 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             position: 'absolute',
             inset: 0,
             overflowY: 'auto',
-            // Reserve space for up to two hand rows (60% overlap) + optional pager.
-            paddingBottom: 'calc(var(--card-h) * 1.4 + 64px)',
+            // Hand hangs by 1/3 card; reserve the still-visible portion.
+            paddingBottom: 'calc(var(--card-h) * 1.4 - var(--card-h) / 3 + 64px)',
           }}
         >
           <TableView
@@ -350,6 +380,22 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             }
           />
         </div>
+
+        {/* Opponent seats — around the rim, human stays at the bottom only */}
+        {opponentSeats.map((placement) => {
+          const player = state.players[placement.playerIndex]
+          if (!player) return null
+          return (
+            <OpponentSeat
+              key={player.index}
+              placement={placement}
+              displayName={player.displayName}
+              cardCount={visibleOpponentCount(player.index, player.hand.length)}
+              isCurrent={player.index === state.currentPlayerIndex}
+              handAnchorRef={handAnchorRefs[player.index]}
+            />
+          )
+        })}
 
         {/* Draw + discard — center of the table */}
         <div
@@ -365,12 +411,10 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             pointerEvents: 'none',
           }}
         >
-          {/* Deck */}
           <div
             ref={deckWrapRef}
             style={{
               pointerEvents: 'auto',
-              // Match discard wrap inset so both pile bases share the same baseline.
               padding: '6px',
               margin: '-6px',
             }}
@@ -389,7 +433,6 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             />
           </div>
 
-          {/* Discard */}
           <div
             ref={discardWrapRef}
             data-discard-zone
@@ -422,9 +465,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
         </div>
       </div>
 
-      {/* ===== UI LAYER =====
-          Absolute overlays only. pointer-events none on the shell so clicks
-          pass through to the table; interactive children re-enable them. */}
+      {/* ===== UI LAYER ===== */}
       <div
         style={{
           position: 'absolute',
@@ -433,7 +474,6 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           pointerEvents: 'none',
         }}
       >
-        {/* Error bar */}
         {state.lastError && (
           <div
             style={{
@@ -453,7 +493,6 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           </div>
         )}
 
-        {/* Menu — opens round / player flyout */}
         <button
           type="button"
           onClick={() => setScoresOpen(true)}
@@ -492,90 +531,14 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           </svg>
         </button>
 
-        {/* Action strip (buy / go down / clear) */}
-        {(showBuy || showPlayActions) && (
-          <div
-            style={{
-              position: 'absolute',
-              top: '10px',
-              left: '10px',
-              right: '58px',
-              display: 'flex',
-              gap: '8px',
-              padding: '6px 10px',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              background: 'rgba(17, 34, 17, 0.72)',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              pointerEvents: 'auto',
-            }}
-          >
-            {showBuy && (
-              <button
-                onClick={() => handleBuy(humanPlayerIndex)}
-                style={{
-                  background: 'var(--danger)',
-                  color: '#fff',
-                  padding: '10px 20px',
-                  borderRadius: '8px',
-                  fontSize: '1rem',
-                  fontWeight: 'bold',
-                  animation: 'pulse 1s ease-in-out infinite alternate',
-                }}
-              >
-                Buy it!
-              </button>
-            )}
-            {showPlayActions && (
-              <>
-                {!currentPlayer.hasGoneDown && (
-                  <button
-                    onClick={handleGoDown}
-                    disabled={selectedIds.size === 0}
-                    style={{
-                      background: 'var(--accent)',
-                      color: '#1a1a1a',
-                      padding: '8px 16px',
-                      borderRadius: '6px',
-                      fontWeight: 'bold',
-                    }}
-                  >
-                    Go Down
-                  </button>
-                )}
-                {currentPlayer.hasGoneDown && state.tableMetlds.length > 0 && selectedIds.size === 1 && (
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', alignSelf: 'center' }}>
-                    Click a group or run to add your card
-                  </div>
-                )}
-                {selectedIds.size > 0 && (
-                  <button
-                    onClick={clearSelection}
-                    style={{
-                      background: 'transparent',
-                      color: 'var(--text-dim)',
-                      padding: '8px 12px',
-                      borderRadius: '6px',
-                      border: '1px solid var(--border)',
-                      fontSize: '0.8rem',
-                    }}
-                  >
-                    Clear
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Human's hand */}
+        {/* Human's hand — only seat at the bottom; hang ~1/3 of the bottom row */}
         <div
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
             bottom: 0,
+            transform: 'translateY(calc(var(--card-h) / 3))',
             pointerEvents: 'auto',
           }}
         >
@@ -590,8 +553,18 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             onReorder={handleReorder}
             onDiscardCard={handleDiscardCard}
             onDiscardHoverChange={setDiscardHot}
-            inflightCardIds={new Set(flightQueue.map((f) => f.card.id))}
-            activeFlightCardId={activeFlightItem?.card.id}
+            inflightCardIds={
+              new Set(
+                flightQueue
+                  .filter((f) => f.arrivalPlayerIndex === undefined && f.targetRef === endSlotRef)
+                  .map((f) => f.card.id),
+              )
+            }
+            activeFlightCardId={
+              activeFlightItem?.targetRef === endSlotRef
+                ? activeFlightItem.card.id
+                : undefined
+            }
             endSlotRef={endSlotRef}
             landingCardId={landingCardId ?? undefined}
           />
@@ -606,23 +579,17 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
         onClose={() => setScoresOpen(false)}
       />
 
-      {/* Draw flight overlay — rendered via portal so position:fixed is viewport-relative */}
       {activeFlightItem && (
         <DrawFlight
-          key={activeFlightItem.card.id}
+          key={`${activeFlightItem.card.id}-${activeFlightItem.arrivalPlayerIndex ?? 'h'}-${activeFlightItem.pendingAction ? 'd' : 'a'}`}
           card={activeFlightItem.card}
           sourceRect={activeFlightItem.sourceRect}
-          targetRef={endSlotRef}
+          targetRef={activeFlightItem.targetRef}
+          faceDown={activeFlightItem.faceDown}
+          viaCenter={activeFlightItem.viaCenter}
           onComplete={handleFlightComplete}
         />
       )}
-
-      <style>{`
-        @keyframes pulse {
-          from { box-shadow: 0 0 0 0 rgba(192,57,43,0.6); }
-          to   { box-shadow: 0 0 8px 4px rgba(192,57,43,0); }
-        }
-      `}</style>
     </div>
   )
 }

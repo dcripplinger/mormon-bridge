@@ -6,8 +6,12 @@ import CardView from './CardView'
 export interface DrawFlightProps {
   card: Card
   sourceRect: DOMRect
-  targetRef: React.RefObject<HTMLDivElement | null>
+  targetRef: React.RefObject<HTMLElement | null>
   onComplete: () => void
+  /** Show card back while flying (opponent draws). */
+  faceDown?: boolean
+  /** Fly via screen center with a brief hold (default true). */
+  viaCenter?: boolean
 }
 
 // Match CSS variable values
@@ -17,14 +21,27 @@ const CARD_H = 96
 const DUR_TO_CENTER = 220
 const DUR_HOLD = 380
 const DUR_TO_HAND = 260
+const DUR_DIRECT = 340
 
 type Phase = 'initial' | 'to-center' | 'hold' | 'to-hand'
 
-function DrawFlightInner({ card, sourceRect, targetRef, onComplete }: DrawFlightProps) {
+function DrawFlightInner({
+  card,
+  sourceRect,
+  targetRef,
+  onComplete,
+  faceDown = false,
+  viaCenter = true,
+}: DrawFlightProps) {
   const [phase, setPhase] = useState<Phase>('initial')
   const [tgtPos, setTgtPos] = useState<{ x: number; y: number } | null>(null)
   const onCompleteRef = useRef(onComplete)
-  onCompleteRef.current = onComplete
+  const targetRefStable = useRef(targetRef)
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete
+    targetRefStable.current = targetRef
+  })
 
   const srcX = sourceRect.left + sourceRect.width / 2
   const srcY = sourceRect.top + sourceRect.height / 2
@@ -36,49 +53,67 @@ function DrawFlightInner({ card, sourceRect, targetRef, onComplete }: DrawFlight
   let scale: number
   switch (phase) {
     case 'initial':
-      posX = srcX; posY = srcY; scale = 1
+      posX = srcX
+      posY = srcY
+      scale = 1
       break
     case 'to-center':
     case 'hold':
-      posX = ctrX; posY = ctrY; scale = 1.12
+      posX = ctrX
+      posY = ctrY
+      scale = 1.12
       break
     default: // 'to-hand'
-      posX = tgtPos?.x ?? ctrX; posY = tgtPos?.y ?? ctrY; scale = 1
+      posX = tgtPos?.x ?? ctrX
+      posY = tgtPos?.y ?? ctrY
+      scale = faceDown ? 0.7 : 1
       break
   }
 
-  const transition = phase === 'initial' || phase === 'hold'
-    ? 'none'
-    : phase === 'to-center'
-      ? `left ${DUR_TO_CENTER}ms ease, top ${DUR_TO_CENTER}ms ease, transform ${DUR_TO_CENTER}ms ease`
-      : `left ${DUR_TO_HAND}ms ease, top ${DUR_TO_HAND}ms ease, transform ${DUR_TO_HAND}ms ease`
+  const transition =
+    phase === 'initial' || phase === 'hold'
+      ? 'none'
+      : phase === 'to-center'
+        ? `left ${DUR_TO_CENTER}ms ease, top ${DUR_TO_CENTER}ms ease, transform ${DUR_TO_CENTER}ms ease`
+        : viaCenter
+          ? `left ${DUR_TO_HAND}ms ease, top ${DUR_TO_HAND}ms ease, transform ${DUR_TO_HAND}ms ease`
+          : `left ${DUR_DIRECT}ms ease, top ${DUR_DIRECT}ms ease, transform ${DUR_DIRECT}ms ease`
 
   useEffect(() => {
-    let t1: ReturnType<typeof setTimeout>
-    let t2: ReturnType<typeof setTimeout>
-    let t3: ReturnType<typeof setTimeout>
-    let t4: ReturnType<typeof setTimeout>
+    let t1: ReturnType<typeof setTimeout> | undefined
+    let t2: ReturnType<typeof setTimeout> | undefined
+    let t3: ReturnType<typeof setTimeout> | undefined
+    let t4: ReturnType<typeof setTimeout> | undefined
 
-    // One frame delay so the initial (source) position is painted before we
-    // change to 'to-center' and trigger the CSS transition.
+    const measureTarget = () => {
+      const el = targetRefStable.current.current
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    }
+
     const raf = requestAnimationFrame(() => {
+      if (!viaCenter) {
+        const tgt = measureTarget()
+        if (tgt) setTgtPos(tgt)
+        setPhase('to-hand')
+        t4 = setTimeout(() => {
+          onCompleteRef.current()
+        }, DUR_DIRECT + 20)
+        return
+      }
+
       setPhase('to-center')
 
       t1 = setTimeout(() => {
-        // Arrived at center — hold, and measure the hand-end slot
         setPhase('hold')
-        if (targetRef.current) {
-          const r = targetRef.current.getBoundingClientRect()
-          setTgtPos({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
-        }
+        const tgt = measureTarget()
+        if (tgt) setTgtPos(tgt)
       }, DUR_TO_CENTER + 20)
 
       t2 = setTimeout(() => {
-        // Re-measure right before flying to the hand (layout may have shifted)
-        if (targetRef.current) {
-          const r = targetRef.current.getBoundingClientRect()
-          setTgtPos({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
-        }
+        const tgt = measureTarget()
+        if (tgt) setTgtPos(tgt)
       }, DUR_TO_CENTER + DUR_HOLD - 20)
 
       t3 = setTimeout(() => {
@@ -92,12 +127,12 @@ function DrawFlightInner({ card, sourceRect, targetRef, onComplete }: DrawFlight
 
     return () => {
       cancelAnimationFrame(raf)
-      clearTimeout(t1)
-      clearTimeout(t2)
-      clearTimeout(t3)
-      clearTimeout(t4)
+      if (t1 !== undefined) clearTimeout(t1)
+      if (t2 !== undefined) clearTimeout(t2)
+      if (t3 !== undefined) clearTimeout(t3)
+      if (t4 !== undefined) clearTimeout(t4)
     }
-  }, []) // intentionally empty — props captured via refs
+  }, [viaCenter])
 
   return (
     <div
@@ -111,14 +146,14 @@ function DrawFlightInner({ card, sourceRect, targetRef, onComplete }: DrawFlight
         transform: `scale(${scale})`,
         pointerEvents: 'none',
         zIndex: 1000,
-        // Subtle glow at center to draw the eye
-        boxShadow: phase === 'to-center' || phase === 'hold'
-          ? '0 0 24px 6px rgba(201, 168, 76, 0.55)'
-          : 'none',
+        boxShadow:
+          phase === 'to-center' || phase === 'hold'
+            ? '0 0 24px 6px rgba(201, 168, 76, 0.55)'
+            : 'none',
         borderRadius: 6,
       }}
     >
-      <CardView card={card} />
+      <CardView card={card} faceDown={faceDown} />
     </div>
   )
 }
