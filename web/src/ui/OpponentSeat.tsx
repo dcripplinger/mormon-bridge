@@ -83,11 +83,29 @@ export default function OpponentSeat({
   const fanSpan = count <= 1 ? cardW : cardW + (count - 1) * step
 
   const rotate = handRotation(side)
-  // After a 90° turn the fan runs along the screen edge and card height
-  // reaches toward the table center. Always a single row in local hand space.
-  const layoutW = side === 'top' ? fanSpan : cardH
-  const layoutH = side === 'top' ? cardH : fanSpan
+  // Reserve the full along-edge capacity so avatar position stays fixed as
+  // cards are added/removed. Actual fan packs toward the avatar inside it.
+  const reservedFan = maxFan
+  const layoutW = side === 'top' ? reservedFan : cardH
+  const layoutH = side === 'top' ? cardH : reservedFan
   const avatarSize = sideCount > 1 ? CROWDED_AVATAR_SIZE : SEAT_AVATAR_SIZE
+
+  // Center of the fan box, placed against the avatar-ward edge of the reserve.
+  const fanCenterAlong = fanSpan / 2
+  const fanBoxStyle: CSSProperties =
+    side === 'top'
+      ? {
+          // Avatar is to the left of the hand — pack toward the left.
+          left: fanCenterAlong,
+          top: '50%',
+          transform: `translate(-50%, -50%) rotate(${rotate}deg)`,
+        }
+      : {
+          // Avatar is above the hand — pack toward the top.
+          left: '50%',
+          top: fanCenterAlong,
+          transform: `translate(-50%, -50%) rotate(${rotate}deg)`,
+        }
 
   return (
     <div
@@ -187,11 +205,9 @@ export default function OpponentSeat({
         <div
           style={{
             position: 'absolute',
-            left: '50%',
-            top: '50%',
             width: fanSpan,
             height: cardH,
-            transform: `translate(-50%, -50%) rotate(${rotate}deg)`,
+            ...fanBoxStyle,
           }}
         >
           {Array.from({ length: count }, (_, i) => (
