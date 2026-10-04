@@ -9,13 +9,7 @@ interface TableViewProps {
 }
 
 export default function TableView({ melds, playerNames, selectedCardIds, onClickMeld }: TableViewProps) {
-  if (melds.length === 0) {
-    return (
-      <div style={{ color: 'var(--text-dim)', textAlign: 'center', padding: '16px', fontSize: '0.9rem' }}>
-        No melds played yet
-      </div>
-    )
-  }
+  if (melds.length === 0) return null
 
   return (
     <div

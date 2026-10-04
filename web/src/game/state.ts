@@ -295,7 +295,7 @@ export function goDown(state: GameState, melds: string[][]): GameState {
   const req = ROUND_REQUIREMENTS[state.roundIndex]
   const totalMeldsNeeded = req.groups + req.runs
   if (melds.length !== totalMeldsNeeded) {
-    return err(state, `Need exactly ${totalMeldsNeeded} meld(s) to go down`)
+    return err(state, `Need exactly ${totalMeldsNeeded} group(s) and/or run(s) to go down`)
   }
 
   // Resolve card objects from hand
@@ -311,7 +311,7 @@ export function goDown(state: GameState, melds: string[][]): GameState {
     }
     const isGroup = isValidGroup(cards)
     const isRun = isValidRun(cards)
-    if (!isGroup && !isRun) return err(state, 'One or more melds are invalid')
+    if (!isGroup && !isRun) return err(state, 'One or more groups or runs are invalid')
     resolved.push({ type: isGroup ? 'group' : 'run', cards })
   }
 
@@ -362,7 +362,7 @@ export function extendMeld(state: GameState, meldId: string, cardId: string): Ga
   if (!currentPlayer.hasGoneDown) return err(state, 'Must go down before extending')
 
   const meldIdx = state.tableMetlds.findIndex((m) => m.id === meldId)
-  if (meldIdx === -1) return err(state, 'Meld not found')
+  if (meldIdx === -1) return err(state, 'Group or run not found')
   const meld = state.tableMetlds[meldIdx]
 
   const result = removeFromHand(currentPlayer.hand, cardId)
@@ -372,7 +372,7 @@ export function extendMeld(state: GameState, meldId: string, cardId: string): Ga
   const newMeldCards = [...meld.cards, card]
   const valid =
     meld.type === 'group' ? isValidGroup(newMeldCards) : isValidRun(newMeldCards)
-  if (!valid) return err(state, 'Card cannot be legally added to that meld')
+  if (!valid) return err(state, 'Card cannot be legally added to that group or run')
 
   const tableMetlds = state.tableMetlds.map((m, i) =>
     i === meldIdx ? { ...m, cards: newMeldCards } : m,

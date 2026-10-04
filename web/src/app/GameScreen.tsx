@@ -182,7 +182,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
     const totalNeeded = req.groups + req.runs
     if (ids.length < totalNeeded * 3) {
       alert(
-        `Select all cards for your melds. Round ${state.roundIndex + 1} needs ${req.groups} group(s) and ${req.runs} run(s).`,
+        `Select all cards for your groups and runs. Round ${state.roundIndex + 1} needs ${req.groups} group(s) and ${req.runs} run(s).`,
       )
       return
     }
@@ -313,19 +313,134 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
   const showPlayActions = isHumanTurn && isPlayOrDiscard
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Table + controls — full width; scores live in a flyout */}
+    <div
+      style={{
+        position: 'relative',
+        height: '100%',
+        overflow: 'hidden',
+        background: 'var(--bg-felt)',
+      }}
+    >
+      {/* ===== TABLE LAYER =====
+          Owns the full playfield. Layout here must never depend on UI chrome. */}
       <div
         style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          position: 'relative',
-          background: 'var(--bg-felt)',
+          position: 'absolute',
+          inset: 0,
+          zIndex: 0,
         }}
       >
-        {/* Error bar — overlays so it never shifts the table */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            overflowY: 'auto',
+            // Reserve space for up to two hand rows (60% overlap) + optional pager.
+            paddingBottom: 'calc(var(--card-h) * 1.4 + 64px)',
+          }}
+        >
+          <TableView
+            melds={state.tableMetlds}
+            playerNames={state.players.map((p) => p.displayName)}
+            selectedCardIds={selectedIds}
+            onClickMeld={
+              isHumanTurn && isPlayOrDiscard && currentPlayer.hasGoneDown
+                ? handleExtend
+                : undefined
+            }
+          />
+        </div>
+
+        {/* Draw + discard — center of the table */}
+        <div
+          style={{
+            position: 'absolute',
+            left: '50%',
+            top: '42%',
+            transform: 'translate(-50%, -50%)',
+            display: 'flex',
+            gap: '28px',
+            alignItems: 'flex-start',
+            zIndex: 1,
+            pointerEvents: 'none',
+          }}
+        >
+          {/* Deck */}
+          <div
+            ref={deckWrapRef}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '6px',
+              pointerEvents: 'auto',
+            }}
+          >
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+              Deck ({state.drawPile.length})
+            </span>
+            <CardView
+              card={{ id: 'deck', color: 'wild', number: 0 }}
+              faceDown
+              onClick={canDrawDeck ? handleDrawDeck : undefined}
+            />
+          </div>
+
+          {/* Discard */}
+          <div
+            ref={discardWrapRef}
+            data-discard-zone
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '6px',
+              pointerEvents: 'auto',
+              padding: '6px',
+              margin: '-6px',
+              borderRadius: '10px',
+              transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
+              background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
+              boxShadow: discardHot
+                ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
+                : 'none',
+              transform: discardHot ? 'scale(1.06)' : 'scale(1)',
+            }}
+          >
+            <span style={{ fontSize: '0.7rem', color: discardHot ? 'var(--text)' : 'var(--text-dim)' }}>
+              Discard
+            </span>
+            {top ? (
+              <CardView
+                card={top}
+                onClick={canClaimDiscard ? handleClaimDiscard : undefined}
+              />
+            ) : (
+              <div
+                style={{
+                  width: 'var(--card-w)',
+                  height: 'var(--card-h)',
+                  borderRadius: 'var(--card-radius)',
+                  border: '2px dashed var(--border)',
+                }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ===== UI LAYER =====
+          Absolute overlays only. pointer-events none on the shell so clicks
+          pass through to the table; interactive children re-enable them. */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 10,
+          pointerEvents: 'none',
+        }}
+      >
+        {/* Error bar */}
         {state.lastError && (
           <div
             style={{
@@ -333,254 +448,142 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
               top: 0,
               left: 0,
               right: 0,
-              zIndex: 6,
               background: 'var(--danger-dim)',
               color: '#fff',
               padding: '6px 12px',
               fontSize: '0.85rem',
               textAlign: 'center',
+              pointerEvents: 'auto',
             }}
           >
             {state.lastError}
           </div>
         )}
 
-        {/* Phase / turn indicator — always present; stable chrome height */}
-        <div
+        {/* Menu — opens round / player flyout */}
+        <button
+          type="button"
+          onClick={() => setScoresOpen(true)}
+          aria-label="Open round and player info"
+          aria-expanded={scoresOpen}
+          aria-haspopup="dialog"
           style={{
-            padding: '8px 12px',
-            background: 'var(--surface)',
-            borderBottom: '1px solid var(--border)',
-            fontSize: '0.85rem',
+            position: 'absolute',
+            top: '10px',
+            right: '10px',
+            width: '40px',
+            height: '40px',
             display: 'flex',
-            gap: '12px',
             alignItems: 'center',
-            flexWrap: 'wrap',
-            zIndex: 3,
-            flexShrink: 0,
+            justifyContent: 'center',
+            background: 'var(--surface)',
+            color: 'var(--text)',
+            border: '1px solid var(--border)',
+            borderRadius: '8px',
+            pointerEvents: 'auto',
           }}
         >
-          <span style={{ color: 'var(--text)', fontWeight: 'bold' }}>
-            {currentPlayer.displayName}'s turn
-          </span>
-          <span style={{ color: 'var(--text-dim)' }}>
-            Phase: {state.phase}
-          </span>
-          <span style={{ color: 'var(--text-dim)' }}>
-            Req: {req.groups}g {req.runs}r
-          </span>
-          <button
-            type="button"
-            onClick={() => setScoresOpen(true)}
-            aria-expanded={scoresOpen}
-            aria-haspopup="dialog"
-            style={{
-              marginLeft: 'auto',
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              padding: '4px 10px',
-              fontSize: '0.8rem',
-              fontWeight: 'bold',
-            }}
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 20 20"
+            fill="none"
+            aria-hidden="true"
           >
-            Round {state.roundIndex + 1}/7
-          </button>
-        </div>
-
-        {/* Table area: melds + centered draw/discard piles.
-            Action controls overlay this region so they never change its size. */}
-        <div
-          style={{
-            flex: 1,
-            position: 'relative',
-            overflow: 'hidden',
-          }}
-        >
-          {/* Action strip (buy / go down / clear) — floats over the felt */}
-          {(showBuy || showPlayActions) && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                zIndex: 4,
-                display: 'flex',
-                gap: '8px',
-                padding: '8px 12px',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                background: 'rgba(17, 34, 17, 0.72)',
-                borderBottom: '1px solid var(--border)',
-                pointerEvents: 'auto',
-              }}
-            >
-              {showBuy && (
-                <button
-                  onClick={() => handleBuy(humanPlayerIndex)}
-                  style={{
-                    background: 'var(--danger)',
-                    color: '#fff',
-                    padding: '10px 20px',
-                    borderRadius: '8px',
-                    fontSize: '1rem',
-                    fontWeight: 'bold',
-                    animation: 'pulse 1s ease-in-out infinite alternate',
-                  }}
-                >
-                  Buy it!
-                </button>
-              )}
-              {showPlayActions && (
-                <>
-                  {!currentPlayer.hasGoneDown && (
-                    <button
-                      onClick={handleGoDown}
-                      disabled={selectedIds.size === 0}
-                      style={{
-                        background: 'var(--accent)',
-                        color: '#1a1a1a',
-                        padding: '8px 16px',
-                        borderRadius: '6px',
-                        fontWeight: 'bold',
-                      }}
-                    >
-                      Go Down
-                    </button>
-                  )}
-                  {currentPlayer.hasGoneDown && state.tableMetlds.length > 0 && selectedIds.size === 1 && (
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', alignSelf: 'center' }}>
-                      Click a meld to extend it
-                    </div>
-                  )}
-                  {selectedIds.size > 0 && (
-                    <button
-                      onClick={clearSelection}
-                      style={{
-                        background: 'transparent',
-                        color: 'var(--text-dim)',
-                        padding: '8px 12px',
-                        borderRadius: '6px',
-                        border: '1px solid var(--border)',
-                        fontSize: '0.8rem',
-                      }}
-                    >
-                      Clear
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              overflowY: 'auto',
-              // Reserve space for up to two hand rows (60% overlap) + optional pager.
-              paddingBottom: 'calc(var(--card-h) * 1.4 + 64px)',
-            }}
-          >
-            <TableView
-              melds={state.tableMetlds}
-              playerNames={state.players.map((p) => p.displayName)}
-              selectedCardIds={selectedIds}
-              onClickMeld={
-                isHumanTurn && isPlayOrDiscard && currentPlayer.hasGoneDown
-                  ? handleExtend
-                  : undefined
-              }
+            <path
+              d="M3 5h14M3 10h14M3 15h14"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
             />
-          </div>
+          </svg>
+        </button>
 
-          {/* Draw + discard — center of the table */}
+        {/* Action strip (buy / go down / clear) */}
+        {(showBuy || showPlayActions) && (
           <div
             style={{
               position: 'absolute',
-              left: '50%',
-              top: '42%',
-              transform: 'translate(-50%, -50%)',
+              top: '10px',
+              left: '10px',
+              right: '58px',
               display: 'flex',
-              gap: '28px',
-              alignItems: 'flex-start',
-              zIndex: 2,
-              pointerEvents: 'none',
+              gap: '8px',
+              padding: '6px 10px',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              background: 'rgba(17, 34, 17, 0.72)',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              pointerEvents: 'auto',
             }}
           >
-            {/* Deck */}
-            <div
-              ref={deckWrapRef}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '6px',
-                pointerEvents: 'auto',
-              }}
-            >
-              <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
-                Deck ({state.drawPile.length})
-              </span>
-              <CardView
-                card={{ id: 'deck', color: 'wild', number: 0 }}
-                faceDown
-                onClick={canDrawDeck ? handleDrawDeck : undefined}
-              />
-            </div>
-
-            {/* Discard */}
-            <div
-              ref={discardWrapRef}
-              data-discard-zone
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '6px',
-                pointerEvents: 'auto',
-                padding: '6px',
-                margin: '-6px',
-                borderRadius: '10px',
-                transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
-                background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
-                boxShadow: discardHot
-                  ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
-                  : 'none',
-                transform: discardHot ? 'scale(1.06)' : 'scale(1)',
-              }}
-            >
-              <span style={{ fontSize: '0.7rem', color: discardHot ? 'var(--text)' : 'var(--text-dim)' }}>
-                Discard
-              </span>
-              {top ? (
-                <CardView
-                  card={top}
-                  onClick={canClaimDiscard ? handleClaimDiscard : undefined}
-                />
-              ) : (
-                <div
-                  style={{
-                    width: 'var(--card-w)',
-                    height: 'var(--card-h)',
-                    borderRadius: 'var(--card-radius)',
-                    border: '2px dashed var(--border)',
-                  }}
-                />
-              )}
-            </div>
+            {showBuy && (
+              <button
+                onClick={() => handleBuy(humanPlayerIndex)}
+                style={{
+                  background: 'var(--danger)',
+                  color: '#fff',
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  fontSize: '1rem',
+                  fontWeight: 'bold',
+                  animation: 'pulse 1s ease-in-out infinite alternate',
+                }}
+              >
+                Buy it!
+              </button>
+            )}
+            {showPlayActions && (
+              <>
+                {!currentPlayer.hasGoneDown && (
+                  <button
+                    onClick={handleGoDown}
+                    disabled={selectedIds.size === 0}
+                    style={{
+                      background: 'var(--accent)',
+                      color: '#1a1a1a',
+                      padding: '8px 16px',
+                      borderRadius: '6px',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    Go Down
+                  </button>
+                )}
+                {currentPlayer.hasGoneDown && state.tableMetlds.length > 0 && selectedIds.size === 1 && (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', alignSelf: 'center' }}>
+                    Click a group or run to add your card
+                  </div>
+                )}
+                {selectedIds.size > 0 && (
+                  <button
+                    onClick={clearSelection}
+                    style={{
+                      background: 'transparent',
+                      color: 'var(--text-dim)',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border)',
+                      fontSize: '0.8rem',
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </>
+            )}
           </div>
-        </div>
+        )}
 
-        {/* Human's hand — floats over the felt, no dedicated panel */}
+        {/* Human's hand */}
         <div
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
             bottom: 0,
-            zIndex: 5,
+            pointerEvents: 'auto',
           }}
         >
           <HandView
