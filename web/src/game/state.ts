@@ -39,6 +39,8 @@ export interface GameState {
   currentPlayerIndex: number
   phase: TurnPhase
   hasDrawnThisTurn: boolean
+  /** Player who discarded the current top card, or null if it was flipped from the deck. */
+  lastDiscarderIndex: number | null
   meldIdCounter: number
   // Transient: last error message for the UI to surface, cleared on next action
   lastError: string | null
@@ -94,6 +96,7 @@ function startRound(opts: {
     currentPlayerIndex: 0,
     phase: 'buy-window',
     hasDrawnThisTurn: false,
+    lastDiscarderIndex: null,
     meldIdCounter,
     lastError: null,
   }
@@ -109,6 +112,19 @@ export function sortHand(cards: Card[]): Card[] {
 
 export function topDiscard(state: GameState): Card | null {
   return state.discardPile[state.discardPile.length - 1] ?? null
+}
+
+/**
+ * Eligible buyers are everyone except the current player (they draw/claim instead)
+ * and the player who just discarded (cannot buy back their own discard).
+ * Initial deck-flip discards have no discarder and may be bought by non-current players.
+ */
+export function canBuyDiscard(state: GameState, buyerIndex: number): boolean {
+  if (state.phase !== 'buy-window') return false
+  if (buyerIndex === state.currentPlayerIndex) return false
+  if (buyerIndex === state.lastDiscarderIndex) return false
+  if (!topDiscard(state)) return false
+  return true
 }
 
 function err(state: GameState, msg: string): GameState {
@@ -141,13 +157,14 @@ function drawFromPile(state: GameState): { card: Card; state: GameState } | null
 // ---------------------------------------------------------------------------
 
 /**
- * A non-current player buys the top discard.
+ * A non-current, non-discarder player buys the top discard.
  * They receive the discard + a penalty card from the deck.
  * The current player then draws from the deck (buy window ends → play-or-discard).
  */
 export function buyDiscard(state: GameState, buyerIndex: number): GameState {
   if (state.phase !== 'buy-window') return err(state, 'Not in buy window')
   if (buyerIndex === state.currentPlayerIndex) return err(state, 'Current player cannot buy')
+  if (buyerIndex === state.lastDiscarderIndex) return err(state, 'Cannot buy your own discard')
   const top = topDiscard(state)
   if (!top) return err(state, 'No discard to buy')
 
@@ -360,7 +377,13 @@ export function discard(state: GameState, cardId: string): GameState {
     p.index === state.currentPlayerIndex ? { ...p, hand: newHand } : p,
   )
   const discardPile = [...state.discardPile, card]
-  let s: GameState = { ...state, players, discardPile, lastError: null }
+  let s: GameState = {
+    ...state,
+    players,
+    discardPile,
+    lastDiscarderIndex: state.currentPlayerIndex,
+    lastError: null,
+  }
 
   // Check if this player emptied their hand → round ends
   if (newHand.length === 0) {

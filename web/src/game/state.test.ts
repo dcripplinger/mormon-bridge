@@ -1,7 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import type { Card } from './card'
 import type { GameState, Meld, PlayerState } from './state'
-import { createGame, drawFromDeck, buyDiscard, claimDiscardAsDraw, goDown, discard, extendMeld } from './state'
+import {
+  createGame,
+  drawFromDeck,
+  buyDiscard,
+  canBuyDiscard,
+  claimDiscardAsDraw,
+  goDown,
+  discard,
+  extendMeld,
+} from './state'
 
 function makeGame(numHumans = 3, numAI = 0) {
   const names = Array.from({ length: numHumans }, (_, i) => `P${i + 1}`)
@@ -45,6 +54,7 @@ function stubPlayState(opts: {
     currentPlayerIndex: 0,
     phase: 'play-or-discard',
     hasDrawnThisTurn: true,
+    lastDiscarderIndex: null,
     meldIdCounter: tableMetlds.length,
     lastError: null,
   }
@@ -132,6 +142,33 @@ describe('buyDiscard', () => {
   it('returns error if current player tries to buy', () => {
     const s = buyDiscard(makeGame(3), 0)
     expect(s.lastError).toBeTruthy()
+  })
+
+  it('returns error if the discarder tries to buy their own discard', () => {
+    let s = drawFromDeck(makeGame(3))
+    const cardId = s.players[0].hand[0].id
+    s = discard(s, cardId)
+    expect(s.currentPlayerIndex).toBe(1)
+    expect(s.lastDiscarderIndex).toBe(0)
+    expect(canBuyDiscard(s, 0)).toBe(false)
+    const bought = buyDiscard(s, 0)
+    expect(bought.lastError).toBe('Cannot buy your own discard')
+  })
+
+  it('allows a non-next player to buy someone else\'s discard', () => {
+    let s = drawFromDeck(makeGame(3))
+    const cardId = s.players[0].hand[0].id
+    s = discard(s, cardId)
+    expect(canBuyDiscard(s, 2)).toBe(true)
+    const bought = buyDiscard(s, 2)
+    expect(bought.lastError).toBeNull()
+    expect(bought.players[2].hand.find((c) => c.id === cardId)).toBeTruthy()
+  })
+
+  it('allows buying the initial deck-flip discard', () => {
+    const s = makeGame(3)
+    expect(s.lastDiscarderIndex).toBeNull()
+    expect(canBuyDiscard(s, 1)).toBe(true)
   })
 })
 

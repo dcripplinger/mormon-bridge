@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { GameState } from '../game/state'
 import {
   buyDiscard,
+  canBuyDiscard,
   claimDiscardAsDraw,
   discard,
   drawFromDeck,
@@ -406,7 +407,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           </div>
 
           {/* Buy window actions */}
-          {isBuyWindow && humanPlayerIndex !== -1 && humanPlayerIndex !== state.currentPlayerIndex && !isFlying && (
+          {humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) && !isFlying && (
             <button
               onClick={() => handleBuy(humanPlayerIndex)}
               style={{

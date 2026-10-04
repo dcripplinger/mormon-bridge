@@ -54,6 +54,8 @@ Wilds:
 ### Turn Sequence
 Each turn proceeds in this order:
 1) Buy window (before draw): Other players may call "Buy it!" to request the top discard
+   - The current player (next to draw) cannot buy; they may claim the discard as their draw instead
+   - The player who just discarded cannot buy back their own discard
    - The current player may either:
      - Allow the first buyer to buy the top discard, or
      - Claim the top discard as their own draw instead
