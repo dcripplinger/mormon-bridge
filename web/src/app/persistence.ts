@@ -6,6 +6,7 @@
  */
 
 import { Preferences } from '@capacitor/preferences'
+import { getAvatar, pickFreeAvatar } from '../avatars/catalog'
 import type { GameState } from '../game/state'
 import type { GameSettings, SeatDraft, WildMoveFrom, WildMoveTo } from './types'
 
@@ -64,6 +65,27 @@ function isValidSeat(s: unknown): s is SeatDraft {
   )
 }
 
+/**
+ * Single-player only: seat 0 is always the human ("You"); every other seat is a bot.
+ * Coerces kind + avatar so older prefs that allowed extra humans still load cleanly.
+ */
+export function normalizeSeats(seats: SeatDraft[]): SeatDraft[] {
+  const result: SeatDraft[] = []
+  for (let i = 0; i < seats.length; i++) {
+    const kind = i === 0 ? 'human' : 'bot'
+    const taken = result.map((s) => s.avatarId)
+    const current = seats[i]
+    const avatar = getAvatar(current.avatarId)
+    const avatarOk =
+      avatar?.kind === kind && !taken.includes(current.avatarId)
+    result.push({
+      kind,
+      avatarId: avatarOk ? current.avatarId : pickFreeAvatar(kind, taken),
+    })
+  }
+  return result
+}
+
 // ---------------------------------------------------------------------------
 // Prefs (seats + game settings)
 // ---------------------------------------------------------------------------
@@ -81,7 +103,7 @@ export async function loadPrefs(): Promise<{
     if (!Array.isArray(parsed.seats) || parsed.seats.length === 0) return null
     if (!parsed.seats.every(isValidSeat)) return null
     if (!isValidSettings(parsed.settings)) return null
-    return { seats: parsed.seats, settings: parsed.settings }
+    return { seats: normalizeSeats(parsed.seats), settings: parsed.settings }
   } catch {
     return null
   }
@@ -105,7 +127,12 @@ export async function loadActiveGame(): Promise<GameState | null> {
     const parsed: StoredActiveGame = JSON.parse(value)
     if (parsed.version !== GAME_VERSION) return null
     if (!parsed.state || !Array.isArray(parsed.state.players)) return null
-    return parsed.state
+    // Single-player: only seat 0 is human; coerce older multi-human saves.
+    const players = parsed.state.players.map((p, i) => ({
+      ...p,
+      isAI: i !== 0,
+    }))
+    return { ...parsed.state, players }
   } catch {
     return null
   }

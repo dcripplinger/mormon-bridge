@@ -32,6 +32,7 @@ import {
   clearActiveGame,
   loadActiveGame,
   loadPrefs,
+  normalizeSeats,
   saveActiveGame,
   savePrefs,
 } from './persistence'
@@ -43,9 +44,9 @@ import type { GameSettings, SeatDraft } from './types'
 // ---------------------------------------------------------------------------
 
 const defaultSeats: SeatDraft[] = [
-  { kind: 'human', avatarId: 'avatar-1' },
-  { kind: 'bot', avatarId: 'avatar-2' },
-  { kind: 'bot', avatarId: 'avatar-3' },
+  { kind: 'human', avatarId: 'h01' },
+  { kind: 'bot', avatarId: 'b01' },
+  { kind: 'bot', avatarId: 'b02' },
 ]
 
 const defaultSettings: GameSettings = {
@@ -61,7 +62,7 @@ function stubGameState(): GameState {
         index: 0,
         displayName: 'You',
         isAI: false,
-        avatarId: 'avatar-1',
+        avatarId: 'h01',
         hand: [],
         hasGoneDown: false,
         cumulativeScore: 0,
@@ -135,6 +136,38 @@ describe('prefs', () => {
       expect(loaded?.settings.wildMoveFrom).toBe(from)
     }
   })
+
+  it('coerces extra human seats to bots on load', async () => {
+    const multiHuman: SeatDraft[] = [
+      { kind: 'human', avatarId: 'h01' },
+      { kind: 'human', avatarId: 'h02' },
+      { kind: 'bot', avatarId: 'b01' },
+    ]
+    await savePrefs(multiHuman, defaultSettings)
+    const loaded = await loadPrefs()
+    expect(loaded?.seats.map((s) => s.kind)).toEqual(['human', 'bot', 'bot'])
+    expect(loaded?.seats[0].avatarId).toBe('h01')
+    expect(loaded?.seats[1].avatarId).toMatch(/^b\d+$/)
+  })
+})
+
+describe('normalizeSeats', () => {
+  it('keeps a valid you + bots layout unchanged', () => {
+    expect(normalizeSeats(defaultSeats)).toEqual(defaultSeats)
+  })
+
+  it('forces seat 0 to human and everyone else to bot', () => {
+    const seats: SeatDraft[] = [
+      { kind: 'bot', avatarId: 'b01' },
+      { kind: 'human', avatarId: 'h01' },
+      { kind: 'human', avatarId: 'h02' },
+    ]
+    const normalized = normalizeSeats(seats)
+    expect(normalized.map((s) => s.kind)).toEqual(['human', 'bot', 'bot'])
+    expect(normalized[0].avatarId).toMatch(/^h\d+$/)
+    expect(normalized[1].avatarId).toMatch(/^b\d+$/)
+    expect(normalized[2].avatarId).toMatch(/^b\d+$/)
+  })
 })
 
 describe('active game', () => {
@@ -149,6 +182,34 @@ describe('active game', () => {
     expect(loaded).not.toBeNull()
     expect(loaded?.roundIndex).toBe(gs.roundIndex)
     expect(loaded?.players[0].displayName).toBe('You')
+  })
+
+  it('coerces non-seat-0 players to AI on load', async () => {
+    const gs = stubGameState()
+    gs.players = [
+      { ...gs.players[0], index: 0, isAI: false },
+      {
+        index: 1,
+        displayName: 'Player 2',
+        isAI: false,
+        avatarId: 'h02',
+        hand: [],
+        hasGoneDown: false,
+        cumulativeScore: 0,
+      },
+      {
+        index: 2,
+        displayName: 'Bot 1',
+        isAI: true,
+        avatarId: 'b01',
+        hand: [],
+        hasGoneDown: false,
+        cumulativeScore: 0,
+      },
+    ]
+    await saveActiveGame(gs)
+    const loaded = await loadActiveGame()
+    expect(loaded?.players.map((p) => p.isAI)).toEqual([false, true, true])
   })
 
   it('rejects a mismatched schema version', async () => {

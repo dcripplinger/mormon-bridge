@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { avatarsForKind, pickFreeAvatar } from '../avatars/catalog'
 import type { GameState, PlayerSetup } from '../game/state'
 import AvatarView from '../ui/AvatarView'
-import { savePrefs } from './persistence'
+import { normalizeSeats, savePrefs } from './persistence'
 import type { GameSettings, SeatDraft, WildMoveFrom, WildMoveTo } from './types'
 
 export type { GameSettings, SeatDraft, WildMoveFrom, WildMoveTo }
@@ -67,17 +67,9 @@ function defaultSeats(): SeatDraft[] {
   return seats
 }
 
-function displayNameFor(seats: SeatDraft[], index: number): string {
+function displayNameFor(index: number): string {
   if (index === 0) return 'You'
-  const seat = seats[index]
-  if (seat.kind === 'human') {
-    const humanOrdinal = seats
-      .slice(0, index + 1)
-      .filter((s) => s.kind === 'human').length
-    return `Player ${humanOrdinal}`
-  }
-  const botOrdinal = seats.slice(0, index + 1).filter((s) => s.kind === 'bot').length
-  return `Bot ${botOrdinal}`
+  return `Bot ${index}`
 }
 
 export default function MenuScreen({
@@ -88,8 +80,10 @@ export default function MenuScreen({
   onContinue,
   onQuit,
 }: Props) {
-  const [seats, setSeats] = useState<SeatDraft[]>(
-    () => (initialSeats && initialSeats.length > 0 ? initialSeats : defaultSeats()),
+  const [seats, setSeats] = useState<SeatDraft[]>(() =>
+    normalizeSeats(
+      initialSeats && initialSeats.length > 0 ? initialSeats : defaultSeats(),
+    ),
   )
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [settings, setSettings] = useState<GameSettings>(
@@ -168,18 +162,6 @@ export default function MenuScreen({
     })
   }
 
-  const setKind = (index: number, kind: AvatarKind) => {
-    if (index === 0 && kind !== 'human') return
-    setSeats((prev) =>
-      prev.map((seat, i) => {
-        if (i !== index) return seat
-        if (seat.kind === kind) return seat
-        const taken = prev.filter((_, j) => j !== index).map((s) => s.avatarId)
-        return { kind, avatarId: pickFreeAvatar(kind, taken) }
-      }),
-    )
-  }
-
   const setAvatar = (index: number, avatarId: string) => {
     setSeats((prev) =>
       prev.map((seat, i) => (i === index ? { ...seat, avatarId } : seat)),
@@ -190,8 +172,8 @@ export default function MenuScreen({
     if (seats.length < MIN_PLAYERS || seats.length > MAX_PLAYERS) return
     onStart(
       seats.map((seat, i) => ({
-        displayName: displayNameFor(seats, i),
-        isAI: seat.kind === 'bot',
+        displayName: displayNameFor(i),
+        isAI: i !== 0,
         avatarId: seat.avatarId,
       })),
     )
@@ -236,7 +218,7 @@ export default function MenuScreen({
           }}
         >
           {seats.map((seat, index) => {
-            const name = displayNameFor(seats, index)
+            const name = displayNameFor(index)
             const showTrash = index > 0 && canRemove
             return (
               <div
@@ -425,11 +407,9 @@ export default function MenuScreen({
 
       {editingSeat && editingIndex !== null && (
         <AvatarPickerModal
-          name={displayNameFor(seats, editingIndex)}
+          name={displayNameFor(editingIndex)}
           seat={editingSeat}
-          canChangeKind={editingIndex !== 0}
           takenIds={takenByOthers}
-          onKindChange={(kind) => setKind(editingIndex, kind)}
           onAvatarChange={(id) => setAvatar(editingIndex, id)}
           onClose={() => setEditingIndex(null)}
         />
@@ -725,17 +705,13 @@ function HowToPlayModal({ onClose }: { onClose: () => void }) {
 function AvatarPickerModal({
   name,
   seat,
-  canChangeKind,
   takenIds,
-  onKindChange,
   onAvatarChange,
   onClose,
 }: {
   name: string
   seat: SeatDraft
-  canChangeKind: boolean
   takenIds: Set<string>
-  onKindChange: (kind: AvatarKind) => void
   onAvatarChange: (avatarId: string) => void
   onClose: () => void
 }) {
@@ -815,39 +791,6 @@ function AvatarPickerModal({
             ×
           </button>
         </div>
-
-        {canChangeKind && (
-          <div
-            role="group"
-            aria-label="Player type"
-            style={{ display: 'flex', gap: '6px' }}
-          >
-            {(['human', 'bot'] as const).map((kind) => {
-              const selected = seat.kind === kind
-              return (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => onKindChange(kind)}
-                  style={{
-                    flex: 1,
-                    padding: '8px 10px',
-                    borderRadius: '6px',
-                    border: selected
-                      ? '1px solid var(--accent)'
-                      : '1px solid var(--border)',
-                    background: selected ? 'var(--accent)' : 'var(--surface-2)',
-                    color: selected ? '#1a1a1a' : 'var(--text)',
-                    fontWeight: selected ? 700 : 500,
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  {kind === 'human' ? 'Human' : 'Bot'}
-                </button>
-              )
-            })}
-          </div>
-        )}
 
         <div
           style={{
