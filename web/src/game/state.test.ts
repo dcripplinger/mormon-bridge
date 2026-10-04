@@ -14,8 +14,16 @@ import {
 } from './state'
 
 function makeGame(numHumans = 3, numAI = 0) {
-  const names = Array.from({ length: numHumans }, (_, i) => `P${i + 1}`)
-  return createGame(names, numAI)
+  const setups = Array.from({ length: numHumans + numAI }, (_, i) => {
+    const isAI = i >= numHumans
+    const n = isAI ? ((i - numHumans) % 8) + 1 : (i % 12) + 1
+    return {
+      displayName: `P${i + 1}`,
+      isAI,
+      avatarId: `${isAI ? 'b' : 'h'}${String(n).padStart(2, '0')}`,
+    }
+  })
+  return createGame(setups)
 }
 
 function card(id: string, color: Card['color'], number: number): Card {
@@ -27,6 +35,7 @@ function player(index: number, hand: Card[], extras: Partial<PlayerState> = {}):
     index,
     displayName: `P${index + 1}`,
     isAI: false,
+    avatarId: `h${String((index % 12) + 1).padStart(2, '0')}`,
     hand,
     hasGoneDown: false,
     cumulativeScore: 0,
@@ -80,11 +89,34 @@ describe('createGame', () => {
   })
 
   it('throws for fewer than 3 players', () => {
-    expect(() => createGame(['P1', 'P2'], 0)).toThrow()
+    expect(() =>
+      createGame([
+        { displayName: 'P1', isAI: false, avatarId: 'h01' },
+        { displayName: 'P2', isAI: false, avatarId: 'h02' },
+      ]),
+    ).toThrow()
   })
 
   it('throws for more than 5 players', () => {
-    expect(() => createGame(['P1', 'P2', 'P3', 'P4', 'P5', 'P6'], 0)).toThrow()
+    expect(() =>
+      createGame(
+        Array.from({ length: 6 }, (_, i) => ({
+          displayName: `P${i + 1}`,
+          isAI: false,
+          avatarId: `h0${(i % 9) + 1}`,
+        })),
+      ),
+    ).toThrow()
+  })
+
+  it('stores avatar ids on players', () => {
+    const state = createGame([
+      { displayName: 'You', isAI: false, avatarId: 'h03' },
+      { displayName: 'Bot 1', isAI: true, avatarId: 'b01' },
+      { displayName: 'Bot 2', isAI: true, avatarId: 'b02' },
+    ])
+    expect(state.players.map((p) => p.avatarId)).toEqual(['h03', 'b01', 'b02'])
+    expect(state.players.map((p) => p.isAI)).toEqual([false, true, true])
   })
 })
 

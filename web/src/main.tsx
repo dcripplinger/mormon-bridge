@@ -4,13 +4,13 @@ import './index.css'
 import MenuScreen from './app/MenuScreen'
 import GameScreen from './app/GameScreen'
 import { createGame } from './game/state'
-import type { GameState } from './game/state'
+import type { GameState, PlayerSetup } from './game/state'
 
 function App() {
   const [gameState, setGameState] = useState<GameState | null>(null)
 
-  const handleStart = (playerNames: string[], aiCount: number) => {
-    setGameState(createGame(playerNames, aiCount))
+  const handleStart = (players: PlayerSetup[]) => {
+    setGameState(createGame(players))
   }
 
   const handleReturnToMenu = () => {

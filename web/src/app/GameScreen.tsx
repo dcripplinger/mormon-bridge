@@ -9,10 +9,11 @@ import {
   reorderHand,
   topDiscard,
 } from '../game/state'
+import AvatarView from '../ui/AvatarView'
 import CardPile from '../ui/CardPile'
 import DrawFlight from '../ui/DrawFlight'
 import HandView from '../ui/HandView'
-import OpponentSeat from '../ui/OpponentSeat'
+import OpponentSeat, { SEAT_AVATAR_SIZE, SEAT_EDGE_INSET_PX } from '../ui/OpponentSeat'
 import ScoreBoard from '../ui/ScoreBoard'
 import TableView from '../ui/TableView'
 import { placeOpponents } from '../ui/seat-layout'
@@ -288,15 +289,25 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           }}
         >
           {sorted.map((p, rank) => (
-            <div key={p.index} style={{ marginBottom: '10px', fontSize: rank === 0 ? '1.2rem' : '1rem' }}>
+            <div
+              key={p.index}
+              style={{
+                marginBottom: '10px',
+                fontSize: rank === 0 ? '1.2rem' : '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+              }}
+            >
+              <AvatarView avatarId={p.avatarId} size={rank === 0 ? 40 : 32} alt="" />
               <span style={{ color: 'var(--text)' }}>
                 {rank + 1}. {p.displayName}
               </span>
-              <span style={{ color: 'var(--text-dim)', marginLeft: '12px' }}>
+              <span style={{ color: 'var(--text-dim)' }}>
                 {p.cumulativeScore} pts
               </span>
               {rank === 0 && (
-                <span style={{ marginLeft: '8px', color: 'var(--text)' }}>👑</span>
+                <span style={{ color: 'var(--text)' }}>👑</span>
               )}
             </div>
           ))}
@@ -390,6 +401,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
               key={player.index}
               placement={placement}
               displayName={player.displayName}
+              avatarId={player.avatarId}
               cardCount={visibleOpponentCount(player.index, player.hand.length)}
               isCurrent={player.index === state.currentPlayerIndex}
               handAnchorRef={handAnchorRefs[player.index]}
@@ -531,14 +543,15 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           </svg>
         </button>
 
-        {/* Human's hand — only seat at the bottom; hang ~1/3 of the bottom row */}
+        {/* Human's hand — only seat at the bottom; hang ~1/3 of the bottom row.
+            Use bottom offset (not transform) so HandView's position:fixed drag
+            ghost stays viewport-relative and is not clipped. */}
         <div
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
-            bottom: 0,
-            transform: 'translateY(calc(var(--card-h) / 3))',
+            bottom: 'calc(var(--card-h) / -3)',
             pointerEvents: 'auto',
           }}
         >
@@ -569,6 +582,27 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             landingCardId={landingCardId ?? undefined}
           />
         </div>
+
+        {humanPlayerIndex !== -1 && (
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              bottom: SEAT_EDGE_INSET_PX,
+              transform: 'translateX(-50%)',
+              zIndex: 20,
+              pointerEvents: 'none',
+              lineHeight: 0,
+            }}
+          >
+            <AvatarView
+              avatarId={state.players[humanPlayerIndex].avatarId}
+              size={SEAT_AVATAR_SIZE}
+              alt={state.players[humanPlayerIndex].displayName}
+              active={state.currentPlayerIndex === humanPlayerIndex}
+            />
+          </div>
+        )}
       </div>
 
       <ScoreBoard

@@ -1,5 +1,6 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { Card } from '../game/card'
+import AvatarView from './AvatarView'
 import CardView from './CardView'
 import {
   seatEdgeLeftPercent,
@@ -10,9 +11,16 @@ import {
 
 const BACK_CARD: Card = { id: 'opponent-back', color: 'wild', number: 0 }
 
+/** Keep avatars inset so the active shimmer isn't clipped by the screen edge. */
+export const SEAT_EDGE_INSET_PX = 10
+/** Default seat avatar size (non-crowded opponent / human). */
+export const SEAT_AVATAR_SIZE = 32
+/** Slightly smaller when multiple opponents share an edge. */
+const CROWDED_AVATAR_SIZE = 28
+
 /** Slightly smaller than the main hand; shrink further when a side is crowded. */
-const BASE_SCALE = 0.62
-const CROWDED_SCALE = 0.5
+const BASE_SCALE = 0.7
+const CROWDED_SCALE = 0.58
 const CARD_W = 64
 const CARD_H = 96
 /**
@@ -21,11 +29,13 @@ const CARD_H = 96
  */
 const MAX_STEP_PX = 14
 /** Hard cap so multiple edge seats still fit on a phone. */
-const ABS_MAX_FAN_PX = 118
+const ABS_MAX_FAN_PX = 128
+const EDGE_INSET_PX = SEAT_EDGE_INSET_PX
 
 interface OpponentSeatProps {
   placement: OpponentSeatPlacement
   displayName: string
+  avatarId: string
   cardCount: number
   isCurrent: boolean
   handAnchorRef?: React.RefObject<HTMLDivElement | null>
@@ -34,6 +44,7 @@ interface OpponentSeatProps {
 export default function OpponentSeat({
   placement,
   displayName,
+  avatarId,
   cardCount,
   isCurrent,
   handAnchorRef,
@@ -44,6 +55,23 @@ export default function OpponentSeat({
   const cardW = CARD_W * scale
   const cardH = CARD_H * scale
   const count = Math.max(0, cardCount)
+  const [nameVisible, setNameVisible] = useState(false)
+  const nameHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (nameHideTimerRef.current !== null) clearTimeout(nameHideTimerRef.current)
+    }
+  }, [])
+
+  const revealName = () => {
+    setNameVisible(true)
+    if (nameHideTimerRef.current !== null) clearTimeout(nameHideTimerRef.current)
+    nameHideTimerRef.current = setTimeout(() => {
+      setNameVisible(false)
+      nameHideTimerRef.current = null
+    }, 2000)
+  }
 
   const maxFan = maxFanAlongEdge(side, sideCount, viewport.w, viewport.h, cardW)
   // Max step = loosest spacing (current look with few cards). Extra cards only tighten.
@@ -59,6 +87,7 @@ export default function OpponentSeat({
   // reaches toward the table center. Always a single row in local hand space.
   const layoutW = side === 'top' ? fanSpan : cardH
   const layoutH = side === 'top' ? cardH : fanSpan
+  const avatarSize = sideCount > 1 ? CROWDED_AVATAR_SIZE : SEAT_AVATAR_SIZE
 
   return (
     <div
@@ -75,19 +104,72 @@ export default function OpponentSeat({
     >
       <div
         style={{
-          fontSize: sideCount > 1 ? '0.75rem' : '0.85rem',
-          fontWeight: isCurrent ? 700 : 500,
-          color: isCurrent ? 'var(--accent)' : 'var(--text)',
-          textShadow: '0 1px 3px rgba(0,0,0,0.75)',
-          maxWidth: '110px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          textAlign: 'center',
-          padding: '2px 4px',
+          position: 'relative',
+          flexShrink: 0,
+          pointerEvents: 'auto',
+          lineHeight: 0,
         }}
       >
-        {displayName}
+        <button
+          type="button"
+          aria-label={displayName}
+          onClick={revealName}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            padding: 0,
+            lineHeight: 0,
+            borderRadius: '50%',
+            cursor: 'pointer',
+            WebkitTapHighlightColor: 'transparent',
+            outline: 'none',
+            boxShadow: 'none',
+            appearance: 'none',
+          }}
+        >
+          <AvatarView
+            avatarId={avatarId}
+            size={avatarSize}
+            alt=""
+            active={isCurrent}
+          />
+        </button>
+        {nameVisible && (
+          <div
+            style={{
+              position: 'absolute',
+              ...(side === 'top'
+                ? {
+                    top: '100%',
+                    left: '50%',
+                    marginTop: '6px',
+                    transform: 'translateX(-50%)',
+                  }
+                : side === 'right'
+                  ? {
+                      top: '50%',
+                      right: '100%',
+                      marginRight: '6px',
+                      transform: 'translateY(-50%)',
+                    }
+                  : {
+                      top: '50%',
+                      left: '100%',
+                      marginLeft: '6px',
+                      transform: 'translateY(-50%)',
+                    }),
+              fontSize: sideCount > 1 ? '0.75rem' : '0.85rem',
+              fontWeight: isCurrent ? 700 : 500,
+              color: isCurrent ? 'var(--accent)' : 'var(--text)',
+              textShadow: '0 1px 3px rgba(0,0,0,0.75)',
+              whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+              lineHeight: 1.2,
+            }}
+          >
+            {displayName}
+          </div>
+        )}
       </div>
 
       {/* Outer box uses post-rotation bounds so flex/hang math stay axis-aligned. */}
@@ -182,19 +264,19 @@ function positionStyle(placement: OpponentSeatPlacement): CSSProperties {
   if (side === 'top') {
     return {
       left: `${seatEdgeLeftPercent(placement)}%`,
-      top: 0,
+      top: EDGE_INSET_PX,
       transform: 'translate(-50%, 0)',
     }
   }
   if (side === 'left') {
     return {
-      left: 0,
+      left: EDGE_INSET_PX,
       top: `${seatEdgeTopPercent(placement)}%`,
       transform: 'translate(0, -50%)',
     }
   }
   return {
-    right: 0,
+    right: EDGE_INSET_PX,
     top: `${seatEdgeTopPercent(placement)}%`,
     transform: 'translate(0, -50%)',
   }

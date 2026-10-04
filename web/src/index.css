@@ -62,3 +62,70 @@ button:disabled {
   40%  { transform: scale(1.04) translateY(-3px); }
   100% { transform: scale(1) translateY(0); }
 }
+
+/* Active-player avatar: gold rim + rotating shimmer halo */
+.avatar-face {
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--surface-2);
+  flex-shrink: 0;
+  display: block;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.avatar-face--active {
+  border: 2px solid var(--accent);
+  box-shadow:
+    0 0 0 1px rgba(232, 164, 34, 0.35),
+    0 1px 4px rgba(0, 0, 0, 0.45);
+  position: relative;
+  z-index: 1;
+}
+
+.avatar-halo {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  line-height: 0;
+  animation: avatar-halo-pulse 1.8s ease-in-out infinite;
+}
+
+.avatar-halo__ring {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--accent) 28deg,
+    transparent 70deg,
+    transparent 160deg,
+    var(--accent) 200deg,
+    transparent 250deg,
+    transparent 360deg
+  );
+  animation: avatar-halo-spin 2.2s linear infinite;
+  filter: blur(0.4px);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  pointer-events: none;
+}
+
+@keyframes avatar-halo-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes avatar-halo-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 3px rgba(232, 164, 34, 0.55))
+            drop-shadow(0 0 8px rgba(232, 164, 34, 0.35));
+  }
+  50% {
+    filter: drop-shadow(0 0 6px rgba(255, 220, 120, 0.9))
+            drop-shadow(0 0 14px rgba(232, 164, 34, 0.65));
+  }
+}

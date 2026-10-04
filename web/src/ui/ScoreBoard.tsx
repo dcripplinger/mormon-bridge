@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import type { PlayerState } from '../game/state'
+import AvatarView from './AvatarView'
 
 interface ScoreBoardProps {
   players: PlayerState[]
@@ -108,15 +109,21 @@ export default function ScoreBoard({
                 p.index === currentPlayerIndex
                   ? '1px solid var(--accent-dim)'
                   : '1px solid transparent',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
             }}
           >
-            <div style={{ color: 'var(--text)' }}>
-              {p.displayName}
-              {p.isAI ? ' 🤖' : ''}
-              {p.hasGoneDown ? ' ✓' : ''}
-            </div>
-            <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginTop: '2px' }}>
-              {p.hand.length} cards · {p.cumulativeScore} pts
+            <AvatarView avatarId={p.avatarId} size={36} alt="" />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ color: 'var(--text)' }}>
+                {p.displayName}
+                {p.isAI ? ' · bot' : ''}
+                {p.hasGoneDown ? ' ✓' : ''}
+              </div>
+              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginTop: '2px' }}>
+                {p.hand.length} cards · {p.cumulativeScore} pts
+              </div>
             </div>
           </div>
         ))}

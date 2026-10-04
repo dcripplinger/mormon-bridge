@@ -25,9 +25,18 @@ export interface PlayerState {
   index: number
   displayName: string
   isAI: boolean
+  /** Curated avatar id from `avatars/catalog`. */
+  avatarId: string
   hand: Card[]
   hasGoneDown: boolean
   cumulativeScore: number
+}
+
+/** Inputs used to start a local game from the menu. */
+export interface PlayerSetup {
+  displayName: string
+  isAI: boolean
+  avatarId: string
 }
 
 export interface GameState {
@@ -50,15 +59,16 @@ export interface GameState {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createGame(playerNames: string[], aiCount: number): GameState {
-  const numPlayers = playerNames.length
+export function createGame(setups: PlayerSetup[]): GameState {
+  const numPlayers = setups.length
   if (numPlayers < 3 || numPlayers > 5) {
     throw new Error('Mormon Bridge requires 3-5 players')
   }
-  const players: PlayerState[] = playerNames.map((name, i) => ({
+  const players: PlayerState[] = setups.map((s, i) => ({
     index: i,
-    displayName: name,
-    isAI: i >= numPlayers - aiCount,
+    displayName: s.displayName,
+    isAI: s.isAI,
+    avatarId: s.avatarId,
     hand: [],
     hasGoneDown: false,
     cumulativeScore: 0,
