@@ -19,6 +19,7 @@ export default function CardView({ card, selected, faceDown, onClick, style }: C
       style={{
         width: 'var(--card-w)',
         height: 'var(--card-h)',
+        display: 'block',
         borderRadius: 'var(--card-radius)',
         border: selected ? '2px solid var(--accent)' : '2px solid transparent',
         transform: selected ? 'translateY(var(--selected-lift))' : undefined,

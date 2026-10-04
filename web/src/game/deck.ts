@@ -4,6 +4,9 @@ const COLORS: CardColor[] = ['red', 'yellow', 'green', 'black']
 const COPIES = 3
 const WILDS_PER_COPY = 1
 
+/** Full undealt deck size: 3 * (4*14 + 1) = 171 */
+export const FULL_DECK_SIZE = COPIES * (COLORS.length * 14 + WILDS_PER_COPY)
+
 export function buildDeck(): Card[] {
   const cards: Card[] = []
   let id = 0
@@ -19,7 +22,6 @@ export function buildDeck(): Card[] {
       id++
     }
   }
-  // Total: 3 * (4*14 + 1) = 3 * 57 = 171 cards
   return cards
 }
 

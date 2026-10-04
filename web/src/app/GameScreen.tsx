@@ -13,7 +13,7 @@ import {
   topDiscard,
 } from '../game/state'
 import { ROUND_REQUIREMENTS } from '../game/rules'
-import CardView from '../ui/CardView'
+import CardPile from '../ui/CardPile'
 import HandView from '../ui/HandView'
 import DrawFlight from '../ui/DrawFlight'
 import ScoreBoard from '../ui/ScoreBoard'
@@ -136,8 +136,8 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
 
   // ---- draw handlers (queue animation, then dispatch) ----
 
-  const handleDrawDeck = useCallback(() => {
-    const rect = deckWrapRef.current?.getBoundingClientRect()
+  const handleDrawDeck = useCallback((sourceRect?: DOMRect) => {
+    const rect = sourceRect ?? deckWrapRef.current?.getBoundingClientRect()
     const topCard = state.drawPile.length > 0
       ? state.drawPile[state.drawPile.length - 1]
       : null
@@ -147,8 +147,8 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
     }
   }, [state.drawPile])
 
-  const handleClaimDiscard = useCallback(() => {
-    const rect = discardWrapRef.current?.getBoundingClientRect()
+  const handleClaimDiscard = useCallback((sourceRect?: DOMRect) => {
+    const rect = sourceRect ?? discardWrapRef.current?.getBoundingClientRect()
     const topCard = topDiscard(state)
     dispatch({ type: 'CLAIM_DISCARD' })
     if (rect && topCard) {
@@ -360,7 +360,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             transform: 'translate(-50%, -50%)',
             display: 'flex',
             gap: '28px',
-            alignItems: 'flex-start',
+            alignItems: 'flex-end',
             zIndex: 1,
             pointerEvents: 'none',
           }}
@@ -369,20 +369,23 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           <div
             ref={deckWrapRef}
             style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '6px',
               pointerEvents: 'auto',
+              // Match discard wrap inset so both pile bases share the same baseline.
+              padding: '6px',
+              margin: '-6px',
             }}
           >
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
-              Deck ({state.drawPile.length})
-            </span>
-            <CardView
-              card={{ id: 'deck', color: 'wild', number: 0 }}
+            <CardPile
+              count={state.drawPile.length}
+              card={
+                state.drawPile.length > 0
+                  ? { id: 'deck', color: 'wild', number: 0 }
+                  : null
+              }
               faceDown
-              onClick={canDrawDeck ? handleDrawDeck : undefined}
+              onActivate={canDrawDeck ? () => handleDrawDeck() : undefined}
+              canDrag={canDrawDeck}
+              onDragDraw={canDrawDeck ? handleDrawDeck : undefined}
             />
           </div>
 
@@ -391,10 +394,6 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             ref={discardWrapRef}
             data-discard-zone
             style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '6px',
               pointerEvents: 'auto',
               padding: '6px',
               margin: '-6px',
@@ -407,24 +406,18 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
               transform: discardHot ? 'scale(1.06)' : 'scale(1)',
             }}
           >
-            <span style={{ fontSize: '0.7rem', color: discardHot ? 'var(--text)' : 'var(--text-dim)' }}>
-              Discard
-            </span>
-            {top ? (
-              <CardView
-                card={top}
-                onClick={canClaimDiscard ? handleClaimDiscard : undefined}
-              />
-            ) : (
-              <div
-                style={{
-                  width: 'var(--card-w)',
-                  height: 'var(--card-h)',
-                  borderRadius: 'var(--card-radius)',
-                  border: '2px dashed var(--border)',
-                }}
-              />
-            )}
+            <CardPile
+              count={state.discardPile.length}
+              card={top}
+              underCard={
+                state.discardPile.length > 1
+                  ? state.discardPile[state.discardPile.length - 2]
+                  : null
+              }
+              onActivate={canClaimDiscard ? () => handleClaimDiscard() : undefined}
+              canDrag={canClaimDiscard}
+              onDragDraw={canClaimDiscard ? handleClaimDiscard : undefined}
+            />
           </div>
         </div>
       </div>
