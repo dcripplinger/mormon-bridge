@@ -52,6 +52,16 @@ button:disabled {
   cursor: default;
 }
 
+/* Scrollable without a visible scrollbar (touch / wheel still work) */
+.scroll-hide {
+  overflow-y: auto;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+.scroll-hide::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Electron */
+}
+
 @keyframes card-land {
   from { transform: scale(0.82); opacity: 0.3; }
   to   { transform: scale(1);    opacity: 1; }

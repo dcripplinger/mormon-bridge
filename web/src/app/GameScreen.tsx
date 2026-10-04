@@ -22,6 +22,10 @@ import { usePortrait } from '../ui/use-portrait'
 interface Props {
   initialState: GameState
   onReturnToMenu: () => void
+  /** Called after every committed state change; fire-and-forget persistence. */
+  onSave: (state: GameState) => void
+  /** Called once when the game finishes (phase === 'game-end'); clears the save. */
+  onGameEnd: () => void
 }
 
 type Action =
@@ -60,8 +64,22 @@ interface FlightItem {
   pendingAction?: Action
 }
 
-export default function GameScreen({ initialState, onReturnToMenu }: Props) {
+export default function GameScreen({ initialState, onReturnToMenu, onSave, onGameEnd }: Props) {
   const [state, dispatch] = useReducer(reducer, initialState)
+
+  // Autosave on every state change; clear the save when the game ends.
+  // Use a ref for the callbacks so this effect never needs to re-register.
+  const onSaveRef = useRef(onSave)
+  const onGameEndRef = useRef(onGameEnd)
+  onSaveRef.current = onSave
+  onGameEndRef.current = onGameEnd
+  useEffect(() => {
+    if (state.phase === 'game-end') {
+      onGameEndRef.current()
+    } else {
+      onSaveRef.current(state)
+    }
+  }, [state])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [targetMeldId, setTargetMeldId] = useState<string | null>(null)
   const [scoresOpen, setScoresOpen] = useState(false)
