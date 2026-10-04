@@ -8,6 +8,7 @@ import {
   drawFromDeck,
   extendMeld,
   goDown,
+  reorderHand,
   runAIStep,
   topDiscard,
 } from '../game/state'
@@ -30,6 +31,7 @@ type Action =
   | { type: 'GO_DOWN'; melds: string[][] }
   | { type: 'EXTEND'; meldId: string; cardId: string }
   | { type: 'DISCARD'; cardId: string }
+  | { type: 'REORDER'; playerIndex: number; orderedIds: string[] }
 
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
@@ -45,6 +47,8 @@ function reducer(state: GameState, action: Action): GameState {
       return extendMeld(state, action.meldId, action.cardId)
     case 'DISCARD':
       return discard(state, action.cardId)
+    case 'REORDER':
+      return reorderHand(state, action.playerIndex, action.orderedIds)
     default:
       return state
   }
@@ -60,6 +64,7 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [targetMeldId, setTargetMeldId] = useState<string | null>(null)
   const [scoresOpen, setScoresOpen] = useState(false)
+  const [discardHot, setDiscardHot] = useState(false)
 
   // ---- draw animation state ----
   const [flightQueue, setFlightQueue] = useState<FlightItem[]>([])
@@ -208,15 +213,27 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
     clearSelection()
   }
 
-  const handleDiscard = () => {
-    if (selectedIds.size !== 1) {
-      alert('Select exactly one card to discard.')
-      return
-    }
-    const cardId = [...selectedIds][0]
+  const humanPlayerIndex = state.players.findIndex((p) => !p.isAI)
+
+  const handleReorder = useCallback(
+    (orderedIds: string[]) => {
+      if (humanPlayerIndex === -1) return
+      dispatch({ type: 'REORDER', playerIndex: humanPlayerIndex, orderedIds })
+    },
+    [humanPlayerIndex],
+  )
+
+  const handleDiscardCard = useCallback((cardId: string) => {
     dispatch({ type: 'DISCARD', cardId })
-    clearSelection()
-  }
+    setSelectedIds((prev) => {
+      if (!prev.has(cardId)) return prev
+      const next = new Set(prev)
+      next.delete(cardId)
+      return next
+    })
+    setTargetMeldId(null)
+    setDiscardHot(false)
+  }, [])
 
   // If a meld target is selected and exactly one card is selected, extend it
   useEffect(() => {
@@ -284,28 +301,19 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
   const isHumanTurn = !currentPlayer.isAI
   const isPlayOrDiscard = state.phase === 'play-or-discard'
   const isBuyWindow = state.phase === 'buy-window'
-  const humanPlayerIndex = state.players.findIndex((p) => !p.isAI)
 
   const canDrawDeck = isHumanTurn && (isBuyWindow || state.phase === 'draw') && !isFlying
   const canClaimDiscard = isHumanTurn && isBuyWindow && !isFlying
+  const canDiscardDrag = isHumanTurn && isPlayOrDiscard && !isFlying
+  const canReorderHand = humanPlayerIndex !== -1 && !isFlying
+  const canSelectCards = isHumanTurn && isPlayOrDiscard && !isFlying
+
+  const showBuy =
+    humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) && !isFlying
+  const showPlayActions = isHumanTurn && isPlayOrDiscard
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Error bar */}
-      {state.lastError && (
-        <div
-          style={{
-            background: 'var(--danger-dim)',
-            color: '#fff',
-            padding: '6px 12px',
-            fontSize: '0.85rem',
-            textAlign: 'center',
-          }}
-        >
-          {state.lastError}
-        </div>
-      )}
-
       {/* Table + controls — full width; scores live in a flyout */}
       <div
         style={{
@@ -317,7 +325,27 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           background: 'var(--bg-felt)',
         }}
       >
-        {/* Phase / turn indicator */}
+        {/* Error bar — overlays so it never shifts the table */}
+        {state.lastError && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              zIndex: 6,
+              background: 'var(--danger-dim)',
+              color: '#fff',
+              padding: '6px 12px',
+              fontSize: '0.85rem',
+              textAlign: 'center',
+            }}
+          >
+            {state.lastError}
+          </div>
+        )}
+
+        {/* Phase / turn indicator — always present; stable chrome height */}
         <div
           style={{
             padding: '8px 12px',
@@ -328,6 +356,8 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             gap: '12px',
             alignItems: 'center',
             flexWrap: 'wrap',
+            zIndex: 3,
+            flexShrink: 0,
           }}
         >
           <span style={{ color: 'var(--accent)', fontWeight: 'bold' }}>
@@ -359,145 +389,188 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
           </button>
         </div>
 
-        {/* Deck + Discard area */}
-        <div
-          style={{
-            display: 'flex',
-            gap: '24px',
-            padding: '16px',
-            alignItems: 'center',
-          }}
-        >
-          {/* Deck */}
-          <div
-            ref={deckWrapRef}
-            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}
-          >
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
-              Deck ({state.drawPile.length})
-            </span>
-            <CardView
-              card={{ id: 'deck', color: 'wild', number: 0 }}
-              faceDown
-              onClick={canDrawDeck ? handleDrawDeck : undefined}
-            />
-          </div>
-
-          {/* Discard */}
-          <div
-            ref={discardWrapRef}
-            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}
-          >
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>Discard</span>
-            {top ? (
-              <CardView
-                card={top}
-                onClick={canClaimDiscard ? handleClaimDiscard : undefined}
-              />
-            ) : (
-              <div
-                style={{
-                  width: 'var(--card-w)',
-                  height: 'var(--card-h)',
-                  borderRadius: 'var(--card-radius)',
-                  border: '2px dashed var(--border)',
-                }}
-              />
-            )}
-          </div>
-
-          {/* Buy window actions */}
-          {humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) && !isFlying && (
-            <button
-              onClick={() => handleBuy(humanPlayerIndex)}
-              style={{
-                background: 'var(--danger)',
-                color: '#fff',
-                padding: '10px 20px',
-                borderRadius: '8px',
-                fontSize: '1rem',
-                fontWeight: 'bold',
-                animation: 'pulse 1s ease-in-out infinite alternate',
-              }}
-            >
-              Buy it!
-            </button>
-          )}
-
-          {/* Play actions */}
-          {isHumanTurn && isPlayOrDiscard && (
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              {!currentPlayer.hasGoneDown && (
-                <button
-                  onClick={handleGoDown}
-                  disabled={selectedIds.size === 0}
-                  style={{
-                    background: 'var(--accent)',
-                    color: '#1a1a1a',
-                    padding: '8px 16px',
-                    borderRadius: '6px',
-                    fontWeight: 'bold',
-                  }}
-                >
-                  Go Down
-                </button>
-              )}
-              {currentPlayer.hasGoneDown && state.tableMetlds.length > 0 && selectedIds.size === 1 && (
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', alignSelf: 'center' }}>
-                  Click a meld to extend it
-                </div>
-              )}
-              <button
-                onClick={handleDiscard}
-                disabled={selectedIds.size !== 1}
-                style={{
-                  background: 'var(--surface-2)',
-                  color: 'var(--text)',
-                  padding: '8px 16px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border)',
-                }}
-              >
-                Discard
-              </button>
-              {selectedIds.size > 0 && (
-                <button
-                  onClick={clearSelection}
-                  style={{
-                    background: 'transparent',
-                    color: 'var(--text-dim)',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border)',
-                    fontSize: '0.8rem',
-                  }}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Table melds — leaves room at the bottom for the floating hand */}
+        {/* Table area: melds + centered draw/discard piles.
+            Action controls overlay this region so they never change its size. */}
         <div
           style={{
             flex: 1,
-            overflowY: 'auto',
-            // Reserve space for up to two hand rows (60% overlap) + optional pager.
-            paddingBottom: 'calc(var(--card-h) * 1.4 + 64px)',
+            position: 'relative',
+            overflow: 'hidden',
           }}
         >
-          <TableView
-            melds={state.tableMetlds}
-            playerNames={state.players.map((p) => p.displayName)}
-            selectedCardIds={selectedIds}
-            onClickMeld={
-              isHumanTurn && isPlayOrDiscard && currentPlayer.hasGoneDown
-                ? handleExtend
-                : undefined
-            }
-          />
+          {/* Action strip (buy / go down / clear) — floats over the felt */}
+          {(showBuy || showPlayActions) && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 4,
+                display: 'flex',
+                gap: '8px',
+                padding: '8px 12px',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                background: 'rgba(17, 34, 17, 0.72)',
+                borderBottom: '1px solid var(--border)',
+                pointerEvents: 'auto',
+              }}
+            >
+              {showBuy && (
+                <button
+                  onClick={() => handleBuy(humanPlayerIndex)}
+                  style={{
+                    background: 'var(--danger)',
+                    color: '#fff',
+                    padding: '10px 20px',
+                    borderRadius: '8px',
+                    fontSize: '1rem',
+                    fontWeight: 'bold',
+                    animation: 'pulse 1s ease-in-out infinite alternate',
+                  }}
+                >
+                  Buy it!
+                </button>
+              )}
+              {showPlayActions && (
+                <>
+                  {!currentPlayer.hasGoneDown && (
+                    <button
+                      onClick={handleGoDown}
+                      disabled={selectedIds.size === 0}
+                      style={{
+                        background: 'var(--accent)',
+                        color: '#1a1a1a',
+                        padding: '8px 16px',
+                        borderRadius: '6px',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      Go Down
+                    </button>
+                  )}
+                  {currentPlayer.hasGoneDown && state.tableMetlds.length > 0 && selectedIds.size === 1 && (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)', alignSelf: 'center' }}>
+                      Click a meld to extend it
+                    </div>
+                  )}
+                  {selectedIds.size > 0 && (
+                    <button
+                      onClick={clearSelection}
+                      style={{
+                        background: 'transparent',
+                        color: 'var(--text-dim)',
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        fontSize: '0.8rem',
+                      }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              overflowY: 'auto',
+              // Reserve space for up to two hand rows (60% overlap) + optional pager.
+              paddingBottom: 'calc(var(--card-h) * 1.4 + 64px)',
+            }}
+          >
+            <TableView
+              melds={state.tableMetlds}
+              playerNames={state.players.map((p) => p.displayName)}
+              selectedCardIds={selectedIds}
+              onClickMeld={
+                isHumanTurn && isPlayOrDiscard && currentPlayer.hasGoneDown
+                  ? handleExtend
+                  : undefined
+              }
+            />
+          </div>
+
+          {/* Draw + discard — center of the table */}
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '42%',
+              transform: 'translate(-50%, -50%)',
+              display: 'flex',
+              gap: '28px',
+              alignItems: 'flex-start',
+              zIndex: 2,
+              pointerEvents: 'none',
+            }}
+          >
+            {/* Deck */}
+            <div
+              ref={deckWrapRef}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '6px',
+                pointerEvents: 'auto',
+              }}
+            >
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+                Deck ({state.drawPile.length})
+              </span>
+              <CardView
+                card={{ id: 'deck', color: 'wild', number: 0 }}
+                faceDown
+                onClick={canDrawDeck ? handleDrawDeck : undefined}
+              />
+            </div>
+
+            {/* Discard */}
+            <div
+              ref={discardWrapRef}
+              data-discard-zone
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '6px',
+                pointerEvents: 'auto',
+                padding: '6px',
+                margin: '-6px',
+                borderRadius: '10px',
+                transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
+                background: discardHot ? 'rgba(201, 168, 76, 0.18)' : 'transparent',
+                boxShadow: discardHot
+                  ? '0 0 0 3px var(--accent), 0 0 22px rgba(201, 168, 76, 0.45)'
+                  : 'none',
+                transform: discardHot ? 'scale(1.06)' : 'scale(1)',
+              }}
+            >
+              <span style={{ fontSize: '0.7rem', color: discardHot ? 'var(--accent)' : 'var(--text-dim)' }}>
+                Discard
+              </span>
+              {top ? (
+                <CardView
+                  card={top}
+                  onClick={canClaimDiscard ? handleClaimDiscard : undefined}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: 'var(--card-w)',
+                    height: 'var(--card-h)',
+                    borderRadius: 'var(--card-radius)',
+                    border: '2px dashed var(--border)',
+                  }}
+                />
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Human's hand — floats over the felt, no dedicated panel */}
@@ -514,7 +587,13 @@ export default function GameScreen({ initialState, onReturnToMenu }: Props) {
             cards={humanPlayerIndex !== -1 ? state.players[humanPlayerIndex].hand : []}
             selectedIds={selectedIds}
             onToggle={toggleCard}
-            isActive={isHumanTurn && isPlayOrDiscard && !isFlying}
+            canSelect={canSelectCards}
+            canReorder={canReorderHand}
+            canDiscard={canDiscardDrag}
+            discardZoneRef={discardWrapRef}
+            onReorder={handleReorder}
+            onDiscardCard={handleDiscardCard}
+            onDiscardHoverChange={setDiscardHot}
             inflightCardIds={new Set(flightQueue.map((f) => f.card.id))}
             activeFlightCardId={activeFlightItem?.card.id}
             endSlotRef={endSlotRef}

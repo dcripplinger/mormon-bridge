@@ -22,7 +22,7 @@ export default function CardView({ card, selected, faceDown, onClick, style }: C
         borderRadius: 'var(--card-radius)',
         border: selected ? '2px solid var(--accent)' : '2px solid transparent',
         transform: selected ? 'translateY(var(--selected-lift))' : undefined,
-        cursor: onClick ? 'pointer' : 'default',
+        cursor: onClick ? 'pointer' : 'inherit',
         transition: 'transform 0.12s ease, border-color 0.12s ease',
         flexShrink: 0,
         objectFit: 'contain',

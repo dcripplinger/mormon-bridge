@@ -110,6 +110,34 @@ export function sortHand(cards: Card[]): Card[] {
   return [...cards].sort(compareCards)
 }
 
+/**
+ * Manually reorder a player's hand. orderedIds must be a permutation of the
+ * current hand card ids.
+ */
+export function reorderHand(
+  state: GameState,
+  playerIndex: number,
+  orderedIds: string[],
+): GameState {
+  const player = state.players[playerIndex]
+  if (!player) return err(state, 'Invalid player')
+  if (orderedIds.length !== player.hand.length) return err(state, 'Invalid hand order')
+  const byId = new Map(player.hand.map((c) => [c.id, c]))
+  const hand: Card[] = []
+  for (const id of orderedIds) {
+    const card = byId.get(id)
+    if (!card) return err(state, 'Invalid hand order')
+    hand.push(card)
+  }
+  return {
+    ...state,
+    players: state.players.map((p) =>
+      p.index === playerIndex ? { ...p, hand } : p,
+    ),
+    lastError: null,
+  }
+}
+
 export function topDiscard(state: GameState): Card | null {
   return state.discardPile[state.discardPile.length - 1] ?? null
 }

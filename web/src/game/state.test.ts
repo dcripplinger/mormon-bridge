@@ -10,6 +10,7 @@ import {
   goDown,
   discard,
   extendMeld,
+  reorderHand,
 } from './state'
 
 function makeGame(numHumans = 3, numAI = 0) {
@@ -169,6 +170,25 @@ describe('buyDiscard', () => {
     const s = makeGame(3)
     expect(s.lastDiscarderIndex).toBeNull()
     expect(canBuyDiscard(s, 1)).toBe(true)
+  })
+})
+
+describe('reorderHand', () => {
+  it('reorders the player hand by id list', () => {
+    const s = makeGame()
+    const hand = s.players[0].hand
+    const reversed = [...hand].reverse().map((c) => c.id)
+    const next = reorderHand(s, 0, reversed)
+    expect(next.players[0].hand.map((c) => c.id)).toEqual(reversed)
+    expect(next.lastError).toBeNull()
+  })
+
+  it('rejects incomplete id lists', () => {
+    const s = makeGame()
+    const partial = s.players[0].hand.slice(0, 3).map((c) => c.id)
+    const next = reorderHand(s, 0, partial)
+    expect(next.lastError).toBeTruthy()
+    expect(next.players[0].hand).toEqual(s.players[0].hand)
   })
 })
 
