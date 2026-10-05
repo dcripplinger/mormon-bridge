@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Card } from '../game/card'
 import CardView from './CardView'
+import { prepSlotLandingPos } from './GoDownPrep'
 
 interface HandViewProps {
   cards: Card[]
@@ -25,6 +26,15 @@ interface HandViewProps {
   endSlotRef?: React.RefObject<HTMLDivElement | null>
   /** Card that just landed — receives a brief scale-in animation. */
   landingCardId?: string
+  // ---- Go-Down prep support ----
+  /** Drop zones for prep slots — lets hand-drag drop directly into a slot. */
+  prepSlotRefs?: Array<React.RefObject<HTMLDivElement | null>>
+  /** Called when a hand card is released over a prep slot. */
+  onDropToSlot?: (cardId: string, slotIndex: number, sideHint: 'left' | 'right') => void
+  /** True when this card may legally land in the given prep slot. */
+  canDropToSlot?: (cardId: string, slotIndex: number) => boolean
+  /** Called with the slot index being hovered during drag, or null when none. */
+  onPrepSlotHoverChange?: (slotIndex: number | null) => void
 }
 
 /** Fixed capacity — width only changes spacing, never row membership. */
@@ -48,8 +58,9 @@ const DRAG_HOVER_DELAY_MS = 500
 /** Cooldown between successive drag-hover page triggers. */
 const DRAG_HOVER_COOLDOWN_MS = 500
 
-/** Front row covers 60% of the back row. */
-const ROW_OVERLAP_PULL = 'calc(var(--card-h) * -0.6)'
+/** Front row covers 60% of the back row (kept for documentation). */
+const _ROW_OVERLAP_PULL = 'calc(var(--card-h) * -0.6)'
+void _ROW_OVERLAP_PULL
 /** Soft max gap between cards on a wide screen (px past card width = slight separation). */
 const MAX_STEP_EXTRA = 6
 
@@ -283,6 +294,10 @@ export default function HandView({
   activeFlightCardId,
   endSlotRef,
   landingCardId,
+  prepSlotRefs,
+  onDropToSlot,
+  canDropToSlot,
+  onPrepSlotHoverChange,
 }: HandViewProps) {
   const measureRef = useRef<HTMLDivElement | null>(null)
   const [cardW, setCardW] = useState(64)
@@ -307,6 +322,7 @@ export default function HandView({
     offsetY: number
     active: boolean
     overDiscard: boolean
+    overSlotIndex: number | null
     order: Card[]
     ghostX: number
     ghostY: number
@@ -385,6 +401,10 @@ export default function HandView({
     maxRowOffset,
     safeRowOffset,
     showPager,
+    prepSlotRefs,
+    onDropToSlot,
+    canDropToSlot,
+    onPrepSlotHoverChange,
   })
   latestRef.current = {
     cards,
@@ -399,6 +419,10 @@ export default function HandView({
     maxRowOffset,
     safeRowOffset,
     showPager,
+    prepSlotRefs,
+    onDropToSlot,
+    canDropToSlot,
+    onPrepSlotHoverChange,
   }
 
   useEffect(() => {
@@ -423,7 +447,38 @@ export default function HandView({
       }, REORDER_POP_MS)
     }
 
-    /** Fly the ghost into its hand slot, then commit reorder + pop. */
+    /** Fly the ghost into a prep slot, then commit the drop. */
+    const beginSlotDropSettle = (
+      cardId: string,
+      fromX: number,
+      fromY: number,
+      slotIndex: number,
+      sideHint: 'left' | 'right',
+    ) => {
+      setDraggingId(cardId)
+      setGhostPos({ x: fromX, y: fromY })
+      setIsSettling(true)
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const L = latestRef.current
+          const slotEl = L.prepSlotRefs?.[slotIndex]?.current
+          const pos = slotEl ? prepSlotLandingPos(slotEl, sideHint) : null
+          if (!pos) {
+            clearLift()
+            L.onDropToSlot?.(cardId, slotIndex, sideHint)
+            return
+          }
+          setGhostPos(pos)
+          if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current)
+          settleTimerRef.current = setTimeout(() => {
+            settleTimerRef.current = null
+            clearLift()
+            L.onDropToSlot?.(cardId, slotIndex, sideHint)
+          }, REORDER_SETTLE_MS)
+        })
+      })
+    }
     const beginReorderSettle = (
       cardId: string,
       order: Card[],
@@ -498,12 +553,28 @@ export default function HandView({
       const cardId = drag?.cardId
       const order = drag?.order
       const wasOverDiscard = drag?.overDiscard ?? false
+      const wasOverSlotIndex = drag?.overSlotIndex ?? null
       const L = latestRef.current
 
       if (drag?.overDiscard) L.onDiscardHoverChange?.(false)
+      if (drag?.overSlotIndex !== null && drag?.overSlotIndex !== undefined) {
+        L.onPrepSlotHoverChange?.(null)
+      }
 
       if (!cardId) {
         clearLift()
+        return
+      }
+
+      // Drop onto prep slot — highest priority over discard/reorder.
+      if (commit !== 'click' && wasOverSlotIndex !== null && L.onDropToSlot && drag) {
+        const slotEl = L.prepSlotRefs?.[wasOverSlotIndex]?.current
+        let sideHint: 'left' | 'right' = 'right'
+        if (slotEl) {
+          const r = slotEl.getBoundingClientRect()
+          sideHint = drag.ghostX + drag.offsetX < r.left + r.width / 2 ? 'left' : 'right'
+        }
+        beginSlotDropSettle(cardId, drag.ghostX, drag.ghostY, wasOverSlotIndex, sideHint)
         return
       }
 
@@ -531,7 +602,8 @@ export default function HandView({
       const dy = e.clientY - drag.startY
       if (!drag.active) {
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
-        if (!L.canReorder && !L.canDiscard) return
+        const hasPrepTarget = (L.prepSlotRefs?.length ?? 0) > 0 && !!L.onDropToSlot
+        if (!L.canReorder && !L.canDiscard && !hasPrepTarget) return
         drag.active = true
         setDraggingId(drag.cardId)
         setPreviewCards(drag.order)
@@ -554,6 +626,26 @@ export default function HandView({
       if (overDiscard !== drag.overDiscard) {
         drag.overDiscard = overDiscard
         L.onDiscardHoverChange?.(overDiscard)
+      }
+
+      // Prep slot hover detection — only light up a valid drop target.
+      if (L.prepSlotRefs && L.prepSlotRefs.length > 0) {
+        let newSlotIndex: number | null = null
+        for (let i = 0; i < L.prepSlotRefs.length; i++) {
+          const el = L.prepSlotRefs[i].current
+          if (!el) continue
+          if (pointInRect(e.clientX, e.clientY, el.getBoundingClientRect())) {
+            const allowed = L.canDropToSlot
+              ? L.canDropToSlot(drag.cardId, i)
+              : true
+            if (allowed) newSlotIndex = i
+            break
+          }
+        }
+        if (newSlotIndex !== drag.overSlotIndex) {
+          drag.overSlotIndex = newSlotIndex
+          L.onPrepSlotHoverChange?.(newSlotIndex)
+        }
       }
 
       if (!overDiscard && L.canReorder) {
@@ -641,6 +733,7 @@ export default function HandView({
       offsetY: e.clientY - rect.top,
       active: false,
       overDiscard: false,
+      overSlotIndex: null,
       order: [...(previewCards ?? cards)],
       ghostX: rect.left,
       ghostY: rect.top,

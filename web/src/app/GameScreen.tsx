@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { Card } from '../game/card'
-import type { GameState } from '../game/state'
+import {
+  canPlaceCard,
+  canSubmit as canSubmitPrep,
+  createPrepSlots,
+  mergeVisibleHandOrder,
+  placeCard,
+  removeCard as removePrepCard,
+  swapWildEnd,
+  type PrepSlot,
+} from '../game/go-down-prep'
+import type { GameState, Meld } from '../game/state'
 import {
   buyDiscard,
   canBuyDiscard,
@@ -8,17 +18,26 @@ import {
   discard,
   drawFromDeck,
   extendMeld,
+  goDown,
   reorderHand,
   topDiscard,
 } from '../game/state'
 import AvatarView from '../ui/AvatarView'
 import CardPile from '../ui/CardPile'
 import DrawFlight from '../ui/DrawFlight'
+import GoDownPrep from '../ui/GoDownPrep'
 import HandView from '../ui/HandView'
 import OpponentSeat, { SEAT_AVATAR_SIZE, SEAT_EDGE_INSET_PX } from '../ui/OpponentSeat'
+import PlayerSets from '../ui/PlayerSets'
 import ScoreBoard from '../ui/ScoreBoard'
-import TableView from '../ui/TableView'
-import { placeOpponents } from '../ui/seat-layout'
+import SetZoomOverlay from '../ui/SetZoomOverlay'
+import {
+  placeOpponents,
+  seatEdgeLeftPercent,
+  seatEdgeTopPercent,
+} from '../ui/seat-layout'
+import type { OpponentSeatPlacement, SeatSide } from '../ui/seat-layout'
+import { FULL_CARD_H, useTableLayout } from '../ui/use-table-layout'
 import { usePortrait } from '../ui/use-portrait'
 
 interface Props {
@@ -37,6 +56,7 @@ type Action =
   | { type: 'EXTEND'; meldId: string; cardId: string }
   | { type: 'DISCARD'; cardId: string }
   | { type: 'REORDER'; playerIndex: number; orderedIds: string[] }
+  | { type: 'GO_DOWN'; meldCardArrays: string[][] }
 
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
@@ -52,6 +72,8 @@ function reducer(state: GameState, action: Action): GameState {
       return discard(state, action.cardId)
     case 'REORDER':
       return reorderHand(state, action.playerIndex, action.orderedIds)
+    case 'GO_DOWN':
+      return goDown(state, action.meldCardArrays)
     default:
       return state
   }
@@ -69,11 +91,72 @@ interface FlightItem {
   pendingAction?: Action
 }
 
+// ---------------------------------------------------------------------------
+// Seat-relative set-pocket positioning helpers
+// ---------------------------------------------------------------------------
+
+/** Match scale constants from OpponentSeat.tsx. */
+const SEAT_BASE_SCALE = 0.7
+const SEAT_CROWDED_SCALE = 0.58
+
+/**
+ * Pixel distance from the screen edge to just inside the opponent seat's
+ * card reach (used to position that player's set pocket).
+ */
+function setsInwardPx(placement: OpponentSeatPlacement): number {
+  const scale = placement.sideCount > 1 ? SEAT_CROWDED_SCALE : SEAT_BASE_SCALE
+  return SEAT_EDGE_INSET_PX + (FULL_CARD_H * scale) / 2 + 8
+}
+
+/** Absolute position style for an opponent's set pocket on the table. */
+function setsPocketStyle(placement: OpponentSeatPlacement): React.CSSProperties {
+  const inset = setsInwardPx(placement)
+  const { side } = placement
+  if (side === 'left') {
+    return {
+      position: 'absolute',
+      left: inset,
+      top: `${seatEdgeTopPercent(placement)}%`,
+      transform: 'translateY(-50%)',
+      zIndex: 1,
+      pointerEvents: 'auto',
+    }
+  }
+  if (side === 'right') {
+    return {
+      position: 'absolute',
+      right: inset,
+      top: `${seatEdgeTopPercent(placement)}%`,
+      transform: 'translateY(-50%)',
+      zIndex: 1,
+      pointerEvents: 'auto',
+    }
+  }
+  // 'top'
+  return {
+    position: 'absolute',
+    top: inset,
+    left: `${seatEdgeLeftPercent(placement)}%`,
+    transform: 'translateX(-50%)',
+    zIndex: 1,
+    pointerEvents: 'auto',
+  }
+}
+
+/** Fans lay out horizontally for top/human; stacked vertically for left/right. */
+function setsDirection(side: SeatSide | 'human'): 'row' | 'column' {
+  return side === 'top' || side === 'human' ? 'row' : 'column'
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export default function GameScreen({ initialState, onReturnToMenu, onSave, onGameEnd }: Props) {
   const [state, dispatch] = useReducer(reducer, initialState)
+  const layout = useTableLayout()
 
   // Autosave on every state change; clear the save when the game ends.
-  // Use a ref for the callbacks so this effect never needs to re-register.
   const onSaveRef = useRef(onSave)
   const onGameEndRef = useRef(onGameEnd)
   onSaveRef.current = onSave
@@ -85,11 +168,22 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       onSaveRef.current(state)
     }
   }, [state])
+
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [targetMeldId, setTargetMeldId] = useState<string | null>(null)
   const [scoresOpen, setScoresOpen] = useState(false)
   const [discardHot, setDiscardHot] = useState(false)
+  const [zoomedMeld, setZoomedMeld] = useState<Meld | null>(null)
   const portrait = usePortrait()
+
+  // ---- Go-Down prep state ----
+  const [prepOpen, setPrepOpen] = useState(false)
+  const [prepSlots, setPrepSlots] = useState<PrepSlot[]>([])
+  const [prepHoveredSlotIndex, setPrepHoveredSlotIndex] = useState<number | null>(null)
+  const [returningCardIds, setReturningCardIds] = useState<Set<string>>(() => new Set())
+  const prepSlotDropZoneRefs = useRef<Array<React.RefObject<HTMLDivElement | null>>>(
+    Array.from({ length: 3 }, () => ({ current: null })),
+  )
 
   // ---- draw / discard animation state ----
   const [flightQueue, setFlightQueue] = useState<FlightItem[]>([])
@@ -125,7 +219,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const handleFlightComplete = useCallback(() => {
     const [done, ...rest] = flightQueueRef.current
     if (!done) return
-    // Keep the ref in sync before any re-entrant completion callbacks.
     flightQueueRef.current = rest
     setFlightQueue(rest)
 
@@ -153,13 +246,23 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       ? []
       : placeOpponents(state.players.length, humanPlayerIndex, portrait)
 
+  // Melds grouped by owner so each player's set pocket can render its own fans.
+  const meldsByPlayer = useMemo(() => {
+    const map = new Map<number, Meld[]>()
+    for (const meld of state.tableMetlds) {
+      const list = map.get(meld.ownerIndex) ?? []
+      list.push(meld)
+      map.set(meld.ownerIndex, list)
+    }
+    return map
+  }, [state.tableMetlds])
+
   // Run AI turns automatically (paused while a card is in flight)
   useEffect(() => {
     if (animBusy) return
     if (state.phase === 'game-end' || state.phase === 'round-end') return
     if (!currentPlayer.isAI) return
 
-    // Give the human time to buy if they're eligible; otherwise keep snappy.
     const aiDelay =
       humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) ? 2800 : 700
 
@@ -260,7 +363,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     const deckRect = deckWrapRef.current?.getBoundingClientRect()
     const topCard = topDiscard(state)
 
-    // Peek at the result to learn the penalty card's identity before dispatching.
     const nextState = buyDiscard(state, humanPlayerIndex)
     const oldHandIds = new Set(state.players[humanPlayerIndex].hand.map((c) => c.id))
     const penaltyCard =
@@ -268,11 +370,8 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         (c) => c.id !== topCard?.id && !oldHandIds.has(c.id),
       ) ?? null
 
-    // Dispatch now — both new cards are immediately in state but will be hidden
-    // by inflightCardIds while their flights are queued.
     dispatch({ type: 'BUY', buyerIndex: humanPlayerIndex })
 
-    // Flight 1: discard card from discard pile → hand
     if (discardRect && topCard) {
       enqueueFlight({
         card: topCard,
@@ -283,7 +382,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       })
     }
 
-    // Flight 2: penalty card from deck → hand (sequential after flight 1)
     if (deckRect && penaltyCard) {
       enqueueFlight({
         card: penaltyCard,
@@ -308,9 +406,20 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const handleReorder = useCallback(
     (orderedIds: string[]) => {
       if (humanPlayerIndex === -1) return
-      dispatch({ type: 'REORDER', playerIndex: humanPlayerIndex, orderedIds })
+      const fullHand = state.players[humanPlayerIndex].hand
+      const prepIds = new Set<string>()
+      for (const slot of prepSlots) {
+        for (const card of slot.cards) prepIds.add(card.id)
+      }
+      const merged = mergeVisibleHandOrder(
+        fullHand.map((c) => c.id),
+        orderedIds,
+        prepIds,
+      )
+      if (!merged) return
+      dispatch({ type: 'REORDER', playerIndex: humanPlayerIndex, orderedIds: merged })
     },
-    [humanPlayerIndex],
+    [humanPlayerIndex, state.players, prepSlots],
   )
 
   const handleDiscardCard = useCallback((cardId: string) => {
@@ -325,7 +434,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     setDiscardHot(false)
   }, [])
 
-  // If a meld target is selected and exactly one card is selected, extend it
+  // If a meld target is selected and exactly one card is selected, extend it.
   useEffect(() => {
     if (targetMeldId && selectedIds.size === 1) {
       const cardId = [...selectedIds][0]
@@ -333,6 +442,127 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       clearSelection()
     }
   }, [targetMeldId, selectedIds])
+
+  // Open the zoom overlay for a meld (opponent tap, or human tap outside extend phase).
+  const zoomMeld = useCallback((meldId: string) => {
+    const meld = state.tableMetlds.find((m) => m.id === meldId)
+    if (meld) setZoomedMeld(meld)
+  }, [state.tableMetlds])
+
+  // ---- Go-Down prep handlers ----
+
+  const prepCardIds = useMemo<Set<string>>(() => {
+    const ids = new Set<string>()
+    for (const slot of prepSlots) {
+      for (const card of slot.cards) ids.add(card.id)
+    }
+    return ids
+  }, [prepSlots])
+
+  const openPrep = useCallback(() => {
+    setPrepSlots(createPrepSlots(state.roundIndex))
+    setPrepOpen(true)
+    setReturningCardIds(new Set())
+  }, [state.roundIndex])
+
+  const returnPrepCardsToHand = useCallback(() => {
+    const ids = new Set<string>()
+    for (const slot of prepSlots) {
+      for (const card of slot.cards) ids.add(card.id)
+    }
+    setReturningCardIds(ids)
+    setPrepSlots((prev) => prev.map((s) => ({ ...s, cards: [] })))
+    setPrepHoveredSlotIndex(null)
+  }, [prepSlots])
+
+  const cancelPrep = useCallback(() => {
+    setPrepSlots([])
+    setPrepOpen(false)
+    setPrepHoveredSlotIndex(null)
+    setReturningCardIds(new Set())
+  }, [])
+
+  const handleDropToSlot = useCallback(
+    (cardId: string, slotIndex: number, sideHint: 'left' | 'right') => {
+      const humanPlayer = humanPlayerIndex !== -1 ? state.players[humanPlayerIndex] : null
+      const card = humanPlayer?.hand.find((c) => c.id === cardId)
+      if (!card) return
+      setPrepSlots((prev) => {
+        const slot = prev[slotIndex]
+        if (!slot) return prev
+        const updated = placeCard(slot, card, sideHint)
+        if (!updated) return prev
+        return prev.map((s, i) => (i === slotIndex ? updated : s))
+      })
+    },
+    [humanPlayerIndex, state.players],
+  )
+
+  const canDropToSlot = useCallback(
+    (cardId: string, slotIndex: number) => {
+      const slot = prepSlots[slotIndex]
+      if (!slot) return false
+      const humanPlayer = humanPlayerIndex !== -1 ? state.players[humanPlayerIndex] : null
+      const card = humanPlayer?.hand.find((c) => c.id === cardId)
+      if (!card) return false
+      return canPlaceCard(slot, card)
+    },
+    [prepSlots, humanPlayerIndex, state.players],
+  )
+
+  const handleRemoveCardFromSlot = useCallback(
+    (slotId: string, cardId: string) => {
+      setPrepSlots((prev) =>
+        prev.map((s) => {
+          if (s.id !== slotId) return s
+          const { slot: updated } = removePrepCard(s, cardId)
+          return updated
+        }),
+      )
+    },
+    [],
+  )
+
+  const handleMoveCardSlotToSlot = useCallback(
+    (fromSlotId: string, cardId: string, toSlotId: string, sideHint: 'left' | 'right') => {
+      setPrepSlots((prev) => {
+        const fromIdx = prev.findIndex((s) => s.id === fromSlotId)
+        const toIdx = prev.findIndex((s) => s.id === toSlotId)
+        if (fromIdx === -1 || toIdx === -1) return prev
+
+        if (fromSlotId === toSlotId) {
+          // Same-slot wild end-swap.
+          const swapped = swapWildEnd(prev[fromIdx])
+          if (!swapped) return prev
+          return prev.map((s, i) => (i === fromIdx ? swapped : s))
+        }
+
+        const fromSlot = prev[fromIdx]
+        const card = fromSlot.cards.find((c) => c.id === cardId)
+        if (!card) return prev
+
+        const { slot: fromUpdated } = removePrepCard(fromSlot, cardId)
+        const toSlot = prev[toIdx]
+        if (!canPlaceCard(toSlot, card)) return prev
+        const toUpdated = placeCard(toSlot, card, sideHint)
+        if (!toUpdated) return prev
+
+        return prev.map((s, i) =>
+          i === fromIdx ? fromUpdated : i === toIdx ? toUpdated : s,
+        )
+      })
+    },
+    [],
+  )
+
+  const handleSubmitPrep = useCallback(() => {
+    if (!canSubmitPrep(prepSlots)) return
+    const meldCardArrays = prepSlots.map((s) => s.cards.map((c) => c.id))
+    dispatch({ type: 'GO_DOWN', meldCardArrays })
+    setPrepSlots([])
+    setPrepOpen(false)
+    setPrepHoveredSlotIndex(null)
+  }, [prepSlots])
 
   if (state.phase === 'game-end') {
     const sorted = [...state.players].sort((a, b) => a.cumulativeScore - b.cumulativeScore)
@@ -404,9 +634,31 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const canDrawDeck = isHumanTurn && (isBuyWindow || state.phase === 'draw') && !animBusy
   const canClaimDiscard = isHumanTurn && isBuyWindow && !animBusy
   const canBuy = humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) && !animBusy
-  const canDiscardDrag = isHumanTurn && isPlayOrDiscard && !animBusy
+  const canDiscardDrag = isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen
   const canReorderHand = humanPlayerIndex !== -1 && !animBusy
-  const canSelectCards = isHumanTurn && isPlayOrDiscard && !animBusy
+  const canSelectCards = isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen
+  /** Whether the human can extend melds on the table. */
+  const canExtend =
+    humanPlayerIndex !== -1 &&
+    isHumanTurn &&
+    isPlayOrDiscard &&
+    state.players[humanPlayerIndex].hasGoneDown
+  /** Whether the GO DOWN button is available. */
+  const canGoDown =
+    !prepOpen &&
+    humanPlayerIndex !== -1 &&
+    isHumanTurn &&
+    isPlayOrDiscard &&
+    !state.players[humanPlayerIndex].hasGoneDown &&
+    !animBusy
+
+  /** Hand cards visible in the hand panel (prep-committed cards are hidden). */
+  const humanHandForDisplay = useMemo(() => {
+    if (humanPlayerIndex === -1) return []
+    const hand = state.players[humanPlayerIndex].hand
+    if (prepCardIds.size === 0) return hand
+    return hand.filter((c) => !prepCardIds.has(c.id))
+  }, [humanPlayerIndex, state.players, prepCardIds])
 
   const arrivalCounts = new Map<number, number>()
   for (const f of flightQueue) {
@@ -422,6 +674,30 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     if (pendingDiscard?.playerIndex === playerIndex) n -= 1
     return Math.max(0, n)
   }
+
+  // ---------------------------------------------------------------------------
+  // Layout values derived from the viewport-responsive TableLayout
+  // ---------------------------------------------------------------------------
+
+  // Visible portion of the human hand above the screen bottom:
+  //   hand height = 1.4×card (two overlapping rows)
+  //   hang         = card/3 + handExtraHang  (off-screen)
+  //   visible      = 1.4×card - hang
+  const handVisibleH = FULL_CARD_H * (1.4 - 1 / 3) - layout.handExtraHang
+  // Human set strip sits 8px above the visible hand top.
+  const humanSetsBottom = Math.round(handVisibleH + 8)
+  // Bottom offset for the hand wrapper (negative = hang below fold).
+  const handBottomOffset = -(FULL_CARD_H / 3 + layout.handExtraHang)
+
+  // Per-side max fan widths — scale with set card width.
+  const humanFanW = Math.round(layout.setCardW * 2.5 + 10)
+  const sideFanW = Math.round(layout.setCardW * 2.0 + 8)
+  const topFanW = Math.round(layout.setCardW * 2.2 + 8)
+
+  const opponentFanW = (side: SeatSide): number =>
+    side === 'top' ? topFanW : sideFanW
+
+  const humanMelds = humanPlayerIndex !== -1 ? (meldsByPlayer.get(humanPlayerIndex) ?? []) : []
 
   return (
     <div
@@ -440,28 +716,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           zIndex: 0,
         }}
       >
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            overflowY: 'auto',
-            // Hand hangs by 1/3 card; reserve the still-visible portion.
-            paddingBottom: 'calc(var(--card-h) * 1.4 - var(--card-h) / 3 + 64px)',
-          }}
-        >
-          <TableView
-            melds={state.tableMetlds}
-            playerNames={state.players.map((p) => p.displayName)}
-            selectedCardIds={selectedIds}
-            onClickMeld={
-              isHumanTurn && isPlayOrDiscard && currentPlayer.hasGoneDown
-                ? handleExtend
-                : undefined
-            }
-          />
-        </div>
-
-        {/* Opponent seats — around the rim, human stays at the bottom only */}
+        {/* Opponent seats — around the rim */}
         {opponentSeats.map((placement) => {
           const player = state.players[placement.playerIndex]
           if (!player) return null
@@ -478,98 +733,189 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           )
         })}
 
-        {/* Draw + discard + Buy — center of the table */}
+        {/* Opponent set pockets — just inside each seat's inward card reach */}
+        {opponentSeats.map((placement) => {
+          const player = state.players[placement.playerIndex]
+          if (!player) return null
+          const melds = meldsByPlayer.get(player.index) ?? []
+          if (melds.length === 0) return null
+          return (
+            <div key={`sets-${player.index}`} style={setsPocketStyle(placement)}>
+              <PlayerSets
+                melds={melds}
+                direction={setsDirection(placement.side)}
+                cardW={layout.setCardW}
+                cardH={layout.setCardH}
+                cardRadius={layout.setCardRadius}
+                maxFanWidth={opponentFanW(placement.side)}
+                onTap={zoomMeld}
+              />
+            </div>
+          )
+        })}
+
+        {/* Human set strip — above the visible hand, centered */}
+        {humanMelds.length > 0 && humanPlayerIndex !== -1 && (
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              bottom: humanSetsBottom,
+              zIndex: 1,
+              pointerEvents: 'auto',
+            }}
+          >
+            <PlayerSets
+              melds={humanMelds}
+              direction="row"
+              cardW={layout.setCardW}
+              cardH={layout.setCardH}
+              cardRadius={layout.setCardRadius}
+              maxFanWidth={humanFanW}
+              targetMeldId={targetMeldId}
+              onTap={canExtend ? handleExtend : zoomMeld}
+            />
+          </div>
+        )}
+
+        {/* Draw + discard + Buy — center of the table.
+            The outer div positions the anchor; the inner div centers and scales. */}
         <div
           style={{
             position: 'absolute',
             left: '50%',
-            top: '42%',
-            transform: 'translate(-50%, -50%)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '10px',
+            top: layout.pileTopPct,
             zIndex: 1,
             pointerEvents: 'none',
           }}
         >
-          {/* Piles row — deck and discard bottom-aligned */}
-          <div style={{ display: 'flex', gap: '28px', alignItems: 'flex-end' }}>
-            <div
-              ref={deckWrapRef}
-              style={{
-                pointerEvents: 'auto',
-                padding: '6px',
-                margin: '-6px',
-              }}
-            >
-              <CardPile
-                count={state.drawPile.length}
-                card={
-                  state.drawPile.length > 0
-                    ? { id: 'deck', color: 'wild', number: 0 }
-                    : null
-                }
-                faceDown
-                onActivate={canDrawDeck ? () => handleDrawDeck() : undefined}
-                canDrag={canDrawDeck}
-                onDragDraw={canDrawDeck ? handleDrawDeck : undefined}
-              />
-            </div>
-
-            <div
-              ref={discardWrapRef}
-              data-discard-zone
-              style={{
-                pointerEvents: 'auto',
-                padding: '6px',
-                margin: '-6px',
-                borderRadius: '10px',
-                transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
-                background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
-                boxShadow: discardHot
-                  ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
-                  : 'none',
-                transform: discardHot ? 'scale(1.06)' : 'scale(1)',
-              }}
-            >
-              <CardPile
-                count={state.discardPile.length}
-                card={top}
-                underCard={
-                  state.discardPile.length > 1
-                    ? state.discardPile[state.discardPile.length - 2]
-                    : null
-                }
-                onActivate={canClaimDiscard ? () => handleClaimDiscard() : undefined}
-                canDrag={canClaimDiscard}
-                onDragDraw={canClaimDiscard ? handleClaimDiscard : undefined}
-              />
-            </div>
-          </div>
-
-          {/* Buy button — own row below, aligned under the discard pile */}
-          <button
-            type="button"
-            disabled={!canBuy}
-            onClick={handleBuy}
+          <div
             style={{
-              alignSelf: 'flex-end',
-              width: 'var(--card-w)',
-              padding: '13px 0',
-              background: 'var(--danger)',
-              color: '#fff',
-              borderRadius: '6px',
-              fontSize: '0.78rem',
-              fontWeight: 700,
-              letterSpacing: '0.05em',
-              textTransform: 'uppercase',
-              pointerEvents: 'auto',
-              animation: canBuy ? 'buy-pulse 1.4s ease-in-out infinite alternate' : 'none',
+              transform: `translate(-50%, -50%) scale(${layout.pileScale})`,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '10px',
             }}
           >
-            BUY IT!
-          </button>
+            {/* Piles row — deck and discard bottom-aligned */}
+            <div style={{ display: 'flex', gap: '28px', alignItems: 'flex-end' }}>
+              <div
+                ref={deckWrapRef}
+                style={{
+                  pointerEvents: 'auto',
+                  padding: '6px',
+                  margin: '-6px',
+                }}
+              >
+                <CardPile
+                  count={state.drawPile.length}
+                  card={
+                    state.drawPile.length > 0
+                      ? { id: 'deck', color: 'wild', number: 0 }
+                      : null
+                  }
+                  faceDown
+                  onActivate={canDrawDeck ? () => handleDrawDeck() : undefined}
+                  canDrag={canDrawDeck}
+                  onDragDraw={canDrawDeck ? handleDrawDeck : undefined}
+                />
+              </div>
+
+              <div
+                ref={discardWrapRef}
+                data-discard-zone
+                style={{
+                  pointerEvents: 'auto',
+                  padding: '6px',
+                  margin: '-6px',
+                  borderRadius: '10px',
+                  transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
+                  background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
+                  boxShadow: discardHot
+                    ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
+                    : 'none',
+                  transform: discardHot ? 'scale(1.06)' : 'scale(1)',
+                }}
+              >
+                <CardPile
+                  count={state.discardPile.length}
+                  card={top}
+                  underCard={
+                    state.discardPile.length > 1
+                      ? state.discardPile[state.discardPile.length - 2]
+                      : null
+                  }
+                  onActivate={canClaimDiscard ? () => handleClaimDiscard() : undefined}
+                  canDrag={canClaimDiscard}
+                  onDragDraw={canClaimDiscard ? handleClaimDiscard : undefined}
+                />
+              </div>
+            </div>
+
+            {/* Button row — mirrors the 28px pile gap:
+                  left cell (deck column) → GO DOWN
+                  right cell (discard column) → BUY IT */}
+            <div
+              style={{
+                display: 'flex',
+                gap: '28px',
+                width: '100%',
+                pointerEvents: 'auto',
+              }}
+            >
+              {/* Deck column: GO DOWN */}
+              <div style={{ width: 'var(--card-w)', flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={!canGoDown}
+                  onClick={openPrep}
+                  style={{
+                    width: '100%',
+                    padding: '10px 0',
+                    background: canGoDown ? 'var(--accent)' : 'var(--surface-2)',
+                    color: canGoDown ? '#1a1a1a' : 'var(--text-dim)',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                    cursor: canGoDown ? 'pointer' : 'default',
+                    transition: 'background 0.2s, color 0.2s',
+                  }}
+                >
+                  GO DOWN
+                </button>
+              </div>
+
+              {/* Discard column: BUY IT */}
+              <div style={{ width: 'var(--card-w)', flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={!canBuy}
+                  onClick={handleBuy}
+                  style={{
+                    width: '100%',
+                    padding: '10px 0',
+                    background: 'var(--danger)',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                    cursor: canBuy ? 'pointer' : 'default',
+                    animation: canBuy ? 'buy-pulse 1.4s ease-in-out infinite alternate' : 'none',
+                  }}
+                >
+                  BUY IT!
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -639,20 +985,37 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           </svg>
         </button>
 
-        {/* Human's hand — only seat at the bottom; hang ~1/3 of the bottom row.
+        {/* Human's hand — only seat at the bottom; hang below the fold.
             Use bottom offset (not transform) so HandView's position:fixed drag
             ghost stays viewport-relative and is not clipped. */}
+        {/* Go-Down prep modal — fixed overlay, independent of hand position */}
+        {prepOpen && (
+          <GoDownPrep
+            slots={prepSlots}
+            slotDropZoneRefs={prepSlotDropZoneRefs.current}
+            highlightedSlotIndex={prepHoveredSlotIndex}
+            isSubmitEnabled={canSubmitPrep(prepSlots)}
+            onSubmit={handleSubmitPrep}
+            onCancel={cancelPrep}
+            onReturnCardsToHand={returnPrepCardsToHand}
+            onRemoveCard={handleRemoveCardFromSlot}
+            onMoveCard={handleMoveCardSlotToSlot}
+            bottomInset={Math.round(handVisibleH + 10)}
+            compact={layout.isShortLandscape}
+          />
+        )}
+
         <div
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
-            bottom: 'calc(var(--card-h) / -3)',
+            bottom: handBottomOffset,
             pointerEvents: 'auto',
           }}
         >
           <HandView
-            cards={humanPlayerIndex !== -1 ? state.players[humanPlayerIndex].hand : []}
+            cards={humanHandForDisplay}
             selectedIds={selectedIds}
             onToggle={toggleCard}
             canSelect={canSelectCards}
@@ -663,11 +1026,12 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             onDiscardCard={handleDiscardCard}
             onDiscardHoverChange={setDiscardHot}
             inflightCardIds={
-              new Set(
-                flightQueue
+              new Set([
+                ...flightQueue
                   .filter((f) => f.arrivalPlayerIndex === undefined && f.targetRef === endSlotRef)
                   .map((f) => f.card.id),
-              )
+                ...returningCardIds,
+              ])
             }
             activeFlightCardId={
               activeFlightItem?.targetRef === endSlotRef
@@ -676,6 +1040,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             }
             endSlotRef={endSlotRef}
             landingCardId={landingCardId ?? undefined}
+            prepSlotRefs={prepOpen ? prepSlotDropZoneRefs.current : undefined}
+            onDropToSlot={prepOpen ? handleDropToSlot : undefined}
+            canDropToSlot={prepOpen ? canDropToSlot : undefined}
+            onPrepSlotHoverChange={prepOpen ? setPrepHoveredSlotIndex : undefined}
           />
         </div>
 
@@ -720,6 +1088,17 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           onComplete={handleFlightComplete}
         />
       )}
+
+      {/* Zoom overlay — tap outside or press Escape to dismiss */}
+      <SetZoomOverlay
+        meld={zoomedMeld}
+        playerName={
+          zoomedMeld != null
+            ? state.players[zoomedMeld.ownerIndex]?.displayName
+            : undefined
+        }
+        onClose={() => setZoomedMeld(null)}
+      />
     </div>
   )
 }
