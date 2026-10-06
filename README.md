@@ -142,12 +142,14 @@ npm run build && npx cap sync
 npx cap open ios             # opens Xcode; sign and archive from there
 ```
 
-### AI (initial behavior)
-- Extremely simple AI for early development:
-  - Always allows buys by others
-  - Always draws from the deck
-  - Discards the same card it drew (no strategy)
-- Future: Add basic heuristics (avoid breaking potential sets, defend against buys, prefer discard pickup when useful)
+### AI (v1 heuristics)
+- Pure decision engine in `web/src/game/ai.ts`; timing/animation in `GameScreen`
+- Goes down when a legal maximized partition exists (uses wilds as needed)
+- Iteratively extends any table meld after going down
+- Buys/claims when the discard helps go-down or is strongly useful post-down (eligible seats only via `canBuyDiscard`)
+- Human-like buy delays; ranked discards (dead cards, avoid feeding the table, 10-pt before 5-pt)
+- Near-extend cards (one away from a table run) are preferred holds
+- Decision debug logs (browser console only): `npm run dev:ai` (requires Vite DEV + `VITE_AI_DEBUG=1`)
 
 ### UI/UX Notes
 - Consistent 2D card visuals and sizing (no stretch)

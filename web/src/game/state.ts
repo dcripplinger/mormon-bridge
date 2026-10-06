@@ -456,37 +456,3 @@ function finishRound(state: GameState): GameState {
   // Start next round, preserving cumulative scores
   return startRound({ players, roundIndex: nextRound, meldIdCounter: state.meldIdCounter })
 }
-
-// ---------------------------------------------------------------------------
-// Simple AI
-// ---------------------------------------------------------------------------
-
-/**
- * Runs the AI for the current player if they are an AI.
- * Returns the new state (possibly after multiple AI sub-steps).
- * Only runs one "decision" per call; caller should loop/call repeatedly until
- * phase changes back to buy-window (human's turn) or game ends.
- */
-export function runAIStep(state: GameState): GameState {
-  const player = state.players[state.currentPlayerIndex]
-  if (!player.isAI) return state
-
-  switch (state.phase) {
-    case 'buy-window':
-      // Simple AI: always skip buying, draw from deck
-      return drawFromDeck(state)
-    case 'draw':
-      return drawFromDeck(state)
-    case 'play-or-discard': {
-      // Simple AI: discard the most recently drawn card (appended at hand end)
-      const hand = player.hand
-      // Empty hand should already have ended the round via goDown/extendMeld
-      if (hand.length === 0) return finishRound(state)
-      // Discard the card most recently added (end of sorted hand = wild or highest number)
-      const cardToDiscard = hand[hand.length - 1]
-      return discard(state, cardToDiscard.id)
-    }
-    default:
-      return state
-  }
-}

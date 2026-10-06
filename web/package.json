@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:ai": "VITE_AI_DEBUG=1 vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",

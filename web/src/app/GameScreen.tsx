@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { Card } from '../game/card'
 import {
+  decideBuy,
+  decideDraw,
+  decidePlay,
+  sampleBuyDelayMs,
+  sampleDrawWindowMs,
+  sampleThinkDelayMs,
+} from '../game/ai'
+import {
   canPlaceCard,
   canSubmit as canSubmitPrep,
   createPrepSlots,
@@ -246,6 +254,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       ? []
       : placeOpponents(state.players.length, humanPlayerIndex, portrait)
 
+  // Keep a live state ref so AI timers can bail if the window already closed.
+  const stateRef = useRef(state)
+  stateRef.current = state
+
   // Melds grouped by owner so each player's set pocket can render its own fans.
   const meldsByPlayer = useMemo(() => {
     const map = new Map<number, Meld[]>()
@@ -257,58 +269,189 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     return map
   }, [state.tableMetlds])
 
-  // Run AI turns automatically (paused while a card is in flight)
+  // AI: buy-race for eligible bots + current-bot draw/play (paused while animating)
   useEffect(() => {
     if (animBusy) return
     if (state.phase === 'game-end' || state.phase === 'round-end') return
-    if (!currentPlayer.isAI) return
 
-    const aiDelay =
-      humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) ? 2800 : 700
+    const timers: ReturnType<typeof setTimeout>[] = []
 
-    const timer = setTimeout(() => {
-      if (state.phase === 'buy-window' || state.phase === 'draw') {
-        const rect = deckWrapRef.current?.getBoundingClientRect()
-        const topCard =
-          state.drawPile.length > 0
-            ? state.drawPile[state.drawPile.length - 1]
-            : null
-        const targetRef = handAnchorRefs[currentPlayer.index]
-        dispatch({ type: 'DRAW_DECK' })
-        if (rect && topCard && targetRef) {
-          enqueueFlight({
-            card: topCard,
-            sourceRect: rect,
-            targetRef,
-            faceDown: true,
-            viaCenter: true,
-            arrivalPlayerIndex: currentPlayer.index,
-          })
-        }
-        return
-      }
-
-      if (state.phase === 'play-or-discard') {
-        const hand = currentPlayer.hand
-        if (hand.length === 0) return
-        const card = hand[hand.length - 1]
-        const seatEl = handAnchorRefs[currentPlayer.index]?.current
-        const sourceRect =
-          seatEl?.getBoundingClientRect() ??
-          new DOMRect(window.innerWidth / 2, window.innerHeight / 2, 64, 96)
-        setPendingDiscard({ playerIndex: currentPlayer.index, cardId: card.id })
+    const animateAiDrawDeck = (playerIndex: number) => {
+      const s = stateRef.current
+      const rect = deckWrapRef.current?.getBoundingClientRect()
+      const topCard =
+        s.drawPile.length > 0 ? s.drawPile[s.drawPile.length - 1] : null
+      const targetRef = handAnchorRefs[playerIndex]
+      dispatch({ type: 'DRAW_DECK' })
+      if (rect && topCard && targetRef) {
         enqueueFlight({
-          card,
-          sourceRect,
-          targetRef: discardWrapRef,
-          faceDown: false,
-          viaCenter: false,
-          pendingAction: { type: 'DISCARD', cardId: card.id },
+          card: topCard,
+          sourceRect: rect,
+          targetRef,
+          faceDown: true,
+          viaCenter: true,
+          arrivalPlayerIndex: playerIndex,
         })
       }
-    }, aiDelay)
+    }
 
-    return () => clearTimeout(timer)
+    const animateAiClaim = (playerIndex: number) => {
+      const s = stateRef.current
+      const rect = discardWrapRef.current?.getBoundingClientRect()
+      const topCard = topDiscard(s)
+      const targetRef = handAnchorRefs[playerIndex]
+      dispatch({ type: 'CLAIM_DISCARD' })
+      if (rect && topCard && targetRef) {
+        enqueueFlight({
+          card: topCard,
+          sourceRect: rect,
+          targetRef,
+          faceDown: false,
+          viaCenter: true,
+          arrivalPlayerIndex: playerIndex,
+        })
+      }
+    }
+
+    const animateAiBuy = (buyerIndex: number) => {
+      const s = stateRef.current
+      if (!canBuyDiscard(s, buyerIndex)) return
+      const discardRect = discardWrapRef.current?.getBoundingClientRect()
+      const deckRect = deckWrapRef.current?.getBoundingClientRect()
+      const topCard = topDiscard(s)
+      const targetRef = handAnchorRefs[buyerIndex]
+      const nextState = buyDiscard(s, buyerIndex)
+      const oldHandIds = new Set(s.players[buyerIndex].hand.map((c) => c.id))
+      const penaltyCard =
+        nextState.players[buyerIndex].hand.find(
+          (c) => c.id !== topCard?.id && !oldHandIds.has(c.id),
+        ) ?? null
+
+      dispatch({ type: 'BUY', buyerIndex })
+
+      if (discardRect && topCard && targetRef) {
+        enqueueFlight({
+          card: topCard,
+          sourceRect: discardRect,
+          targetRef,
+          faceDown: false,
+          viaCenter: true,
+          arrivalPlayerIndex: buyerIndex,
+        })
+      }
+      if (deckRect && penaltyCard && targetRef) {
+        enqueueFlight({
+          card: penaltyCard,
+          sourceRect: deckRect,
+          targetRef,
+          faceDown: true,
+          viaCenter: true,
+          arrivalPlayerIndex: buyerIndex,
+        })
+      }
+      // Current player also drew from the deck as part of buyDiscard —
+      // animate that card to the current seat when the buyer is not current.
+      const currentIdx = s.currentPlayerIndex
+      const currentOldIds = new Set(s.players[currentIdx].hand.map((c) => c.id))
+      const currentDrawn =
+        nextState.players[currentIdx].hand.find((c) => !currentOldIds.has(c.id)) ?? null
+      const currentTarget = handAnchorRefs[currentIdx]
+      if (deckRect && currentDrawn && currentTarget) {
+        enqueueFlight({
+          card: currentDrawn,
+          sourceRect: deckRect,
+          targetRef: currentTarget,
+          faceDown: currentIdx !== humanPlayerIndex,
+          viaCenter: true,
+          arrivalPlayerIndex: currentIdx,
+        })
+      }
+    }
+
+    if (state.phase === 'buy-window') {
+      for (const p of state.players) {
+        if (!p.isAI) continue
+        if (!canBuyDiscard(state, p.index)) continue
+        if (!decideBuy(state, p.index)) continue
+        const delay = sampleBuyDelayMs()
+        timers.push(
+          setTimeout(() => {
+            const s = stateRef.current
+            if (!canBuyDiscard(s, p.index)) return
+            animateAiBuy(p.index)
+          }, delay),
+        )
+      }
+
+      if (currentPlayer.isAI) {
+        const delay = sampleDrawWindowMs()
+        timers.push(
+          setTimeout(() => {
+            const s = stateRef.current
+            if (s.phase !== 'buy-window' && s.phase !== 'draw') return
+            if (s.currentPlayerIndex !== currentPlayer.index) return
+            const choice = decideDraw(s)
+            if (choice === 'claim') animateAiClaim(currentPlayer.index)
+            else animateAiDrawDeck(currentPlayer.index)
+          }, delay),
+        )
+      }
+    } else if (state.phase === 'draw' && currentPlayer.isAI) {
+      const delay = sampleThinkDelayMs()
+      timers.push(
+        setTimeout(() => {
+          const s = stateRef.current
+          if (s.phase !== 'draw') return
+          animateAiDrawDeck(currentPlayer.index)
+        }, delay),
+      )
+    } else if (state.phase === 'play-or-discard' && currentPlayer.isAI) {
+      const delay = sampleThinkDelayMs()
+      timers.push(
+        setTimeout(() => {
+          const s = stateRef.current
+          if (s.phase !== 'play-or-discard') return
+          if (s.players[s.currentPlayerIndex]?.index !== currentPlayer.index) return
+
+          const plan = decidePlay(s)
+          const step = plan.steps[0]
+          if (!step) return
+
+          if (step.type === 'goDown') {
+            dispatch({ type: 'GO_DOWN', meldCardArrays: step.melds })
+            return
+          }
+
+          if (step.type === 'extend') {
+            dispatch({ type: 'EXTEND', meldId: step.meldId, cardId: step.cardId })
+            return
+          }
+
+          if (step.type === 'discard') {
+            const player = s.players[s.currentPlayerIndex]
+            const card = player.hand.find((c) => c.id === step.cardId)
+            if (!card) return
+            const seatEl = handAnchorRefs[player.index]?.current
+            const sourceRect =
+              seatEl?.getBoundingClientRect() ??
+              new DOMRect(window.innerWidth / 2, window.innerHeight / 2, 64, 96)
+            setPendingDiscard({ playerIndex: player.index, cardId: card.id })
+            enqueueFlight({
+              card,
+              sourceRect,
+              targetRef: discardWrapRef,
+              faceDown: false,
+              viaCenter: false,
+              pendingAction: { type: 'DISCARD', cardId: card.id },
+            })
+          }
+        }, delay),
+      )
+    }
+
+    return () => {
+      for (const t of timers) clearTimeout(t)
+    }
   }, [state, currentPlayer, animBusy, humanPlayerIndex, handAnchorRefs, enqueueFlight])
 
   const toggleCard = useCallback((id: string) => {
