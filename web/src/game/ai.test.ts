@@ -364,6 +364,42 @@ describe('decideBuy', () => {
     })
     expect(decideBuy(state, 0)).toBe(false)
   })
+
+  it('does not buy a 5 that only extends a group already on the table', () => {
+    const group: Meld = {
+      id: 'fives',
+      ownerIndex: 0,
+      type: 'group',
+      cards: [
+        card('r5', 'red', 5),
+        card('y5', 'yellow', 5),
+        card('g5', 'green', 5),
+      ],
+    }
+    const hand = [
+      card('a', 'red', 2),
+      card('b', 'yellow', 8),
+      card('c', 'black', 11),
+    ]
+    const state = stubState({
+      hand,
+      hasGoneDown: true,
+      tableMetlds: [group],
+      roundIndex: 0,
+      phase: 'buy-window',
+      currentPlayerIndex: 1,
+      discardPile: [card('buy5', 'black', 5)],
+      lastDiscarderIndex: 1,
+      hasDrawnThisTurn: false,
+      players: [
+        player(0, hand, { hasGoneDown: true }),
+        player(1, [card('x', 'red', 1)]),
+        player(2, [card('y', 'yellow', 2)]),
+      ],
+    })
+    expect(canBuyDiscard(state, 0)).toBe(true)
+    expect(decideBuy(state, 0)).toBe(false)
+  })
 })
 
 describe('decideDraw', () => {

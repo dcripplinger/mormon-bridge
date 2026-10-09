@@ -793,16 +793,38 @@ export function decideBuy(state: GameState, buyerIndex: number): boolean {
     player.hasGoneDown,
   )
 
+  // A buy takes the discard and a penalty card. After going down, laying
+  // the discard on an existing meld only returns one of those two cards, so
+  // the hand grows. The rare case (the discard unlocks two or more held
+  // connectors and three or more cards then play) is not worth chasing.
+  if (player.hasGoneDown) {
+    aiLog({
+      playerLabel: label,
+      decision: 'skipBuy',
+      reason: `Skip ${formatCardShort(top)}: already down; buy adds a penalty card and one play does not shrink the hand (acquire ${breakdown.value.toFixed(1)} ignored)`,
+      hand: player.hand,
+      target: top,
+      details: {
+        acquireValue: Number(breakdown.value.toFixed(2)),
+        handSize: player.hand.length,
+        hasGoneDown: true,
+        purposeBefore: breakdown.purposeSummaryBefore,
+        purposeAfter: breakdown.purposeSummaryAfter,
+        readinessDelta: breakdown.readinessDelta,
+        versatilityDelta: breakdown.versatilityDelta,
+        overplayDelta: Number(breakdown.overplayDelta.toFixed(3)),
+        completesGoDown: breakdown.completesGoDown,
+      },
+    })
+    return false
+  }
+
   let threshold = BUY_THRESHOLD_BASE
   let thresholdNote = `base ${threshold} (penalty~${PENALTY_COST})`
   if (player.hand.length >= HAND_BLOAT_SOFT) {
     const bloat = (player.hand.length - HAND_BLOAT_SOFT + 1) * 3
     threshold += bloat
     thresholdNote = `bloated hand ${player.hand.length} → threshold ${threshold}`
-  }
-  if (player.hasGoneDown) {
-    threshold = PENALTY_COST + 2
-    thresholdNote = `already down → threshold ${threshold}`
   }
 
   const buy = breakdown.value >= threshold
