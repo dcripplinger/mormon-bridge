@@ -2,15 +2,17 @@ import { describe, it, expect } from 'vitest'
 import type { Card } from './card'
 import type { GameState, Meld, PlayerState } from './state'
 import {
+  continueAfterRound,
   createGame,
   drawFromDeck,
-  buyDiscard,
   canBuyDiscard,
+  declareBuy,
   claimDiscardAsDraw,
   goDown,
   discard,
   extendMeld,
   reorderHand,
+  undoExtend,
 } from './state'
 
 function makeGame(numHumans = 3, numAI = 0) {
@@ -65,6 +67,10 @@ function stubPlayState(opts: {
     phase: 'play-or-discard',
     hasDrawnThisTurn: true,
     lastDiscarderIndex: null,
+    buyIntents: [],
+    extendHistory: [],
+    pendingWild: null,
+    roundVictorIndex: null,
     meldIdCounter: tableMetlds.length,
     lastError: null,
   }
@@ -151,29 +157,29 @@ describe('claimDiscardAsDraw', () => {
   })
 })
 
-describe('buyDiscard', () => {
-  it('gives top discard and penalty card to buyer', () => {
+describe('declareBuy', () => {
+  it('records the caller without moving cards', () => {
     const base = makeGame(3)
-    const top = base.discardPile[base.discardPile.length - 1]
-    const s = buyDiscard(base, 1)  // player 1 buys
-    const buyer = s.players[1]
-    expect(buyer.hand.find((c) => c.id === top.id)).toBeTruthy()
-    expect(buyer.hand.length).toBe(13)  // 11 + discard + penalty
+    const s = declareBuy(base, 1)
+    expect(s.lastError).toBeNull()
+    expect(s.buyIntents).toEqual([1])
+    expect(s.phase).toBe('buy-window')
+    expect(s.players[1].hand).toHaveLength(11)
+    expect(s.discardPile).toHaveLength(1)
   })
 
-  it('gives the current player a drawn card', () => {
+  it('lets a later player call buy after someone else has', () => {
     const base = makeGame(3)
-    const s = buyDiscard(base, 1)
-    expect(s.players[0].hand).toHaveLength(12)  // 11 + drawn
-  })
-
-  it('advances to play-or-discard', () => {
-    const s = buyDiscard(makeGame(3), 1)
-    expect(s.phase).toBe('play-or-discard')
+    const first = declareBuy(base, 1)
+    expect(canBuyDiscard(first, 2)).toBe(true)
+    expect(canBuyDiscard(first, 1)).toBe(false)
+    const second = declareBuy(first, 2)
+    expect(second.buyIntents).toEqual([1, 2])
+    expect(second.phase).toBe('buy-window')
   })
 
   it('returns error if current player tries to buy', () => {
-    const s = buyDiscard(makeGame(3), 0)
+    const s = declareBuy(makeGame(3), 0)
     expect(s.lastError).toBeTruthy()
   })
 
@@ -184,24 +190,63 @@ describe('buyDiscard', () => {
     expect(s.currentPlayerIndex).toBe(1)
     expect(s.lastDiscarderIndex).toBe(0)
     expect(canBuyDiscard(s, 0)).toBe(false)
-    const bought = buyDiscard(s, 0)
+    const bought = declareBuy(s, 0)
     expect(bought.lastError).toBe('Cannot buy your own discard')
   })
 
-  it('allows a non-next player to buy someone else\'s discard', () => {
+  it('allows a non-next player to call buy on someone else\'s discard', () => {
     let s = drawFromDeck(makeGame(3))
     const cardId = s.players[0].hand[0].id
     s = discard(s, cardId)
     expect(canBuyDiscard(s, 2)).toBe(true)
-    const bought = buyDiscard(s, 2)
-    expect(bought.lastError).toBeNull()
-    expect(bought.players[2].hand.find((c) => c.id === cardId)).toBeTruthy()
+    const called = declareBuy(s, 2)
+    expect(called.lastError).toBeNull()
+    expect(called.buyIntents).toEqual([2])
   })
 
   it('allows buying the initial deck-flip discard', () => {
     const s = makeGame(3)
     expect(s.lastDiscarderIndex).toBeNull()
     expect(canBuyDiscard(s, 1)).toBe(true)
+  })
+})
+
+describe('drawFromDeck with a pending buy', () => {
+  it('deals the discard and a penalty to the first buyer, then draws for the active player', () => {
+    const base = makeGame(3)
+    const top = base.discardPile[base.discardPile.length - 1]
+    const penalty = base.drawPile[base.drawPile.length - 1]
+    const drawn = base.drawPile[base.drawPile.length - 2]
+    const called = declareBuy(declareBuy(base, 1), 2)
+    const s = drawFromDeck(called)
+    expect(s.lastError).toBeNull()
+    expect(s.phase).toBe('play-or-discard')
+    expect(s.buyIntents).toEqual([])
+    expect(s.players[1].hand.find((c) => c.id === top.id)).toBeTruthy()
+    expect(s.players[1].hand.find((c) => c.id === penalty.id)).toBeTruthy()
+    expect(s.players[1].hand).toHaveLength(13)
+    expect(s.players[2].hand).toHaveLength(11)
+    expect(s.players[0].hand.find((c) => c.id === drawn.id)).toBeTruthy()
+    expect(s.players[0].hand).toHaveLength(12)
+  })
+
+  it('closes the buy window so nobody else can call', () => {
+    const s = drawFromDeck(declareBuy(makeGame(3), 1))
+    expect(canBuyDiscard(s, 2)).toBe(false)
+  })
+})
+
+describe('claimDiscardAsDraw denies a pending buy', () => {
+  it('gives the discard to the active player and nothing to the buyer', () => {
+    const base = makeGame(3)
+    const top = base.discardPile[base.discardPile.length - 1]
+    const called = declareBuy(base, 1)
+    const s = claimDiscardAsDraw(called)
+    expect(s.players[0].hand.find((c) => c.id === top.id)).toBeTruthy()
+    expect(s.players[1].hand).toHaveLength(11)
+    expect(s.buyIntents).toEqual([])
+    expect(s.phase).toBe('play-or-discard')
+    expect(canBuyDiscard(s, 2)).toBe(false)
   })
 })
 
@@ -255,9 +300,13 @@ describe('discard', () => {
     })
     const next = discard(s, 'last')
     // Round 0 → starts round 1 (buy-window), not stuck in play-or-discard
-    expect(next.roundIndex).toBe(1)
-    expect(next.phase).toBe('buy-window')
+    expect(next.roundIndex).toBe(0)
+    expect(next.phase).toBe('round-end')
+    expect(next.roundVictorIndex).toBe(0)
     expect(next.lastError).toBeNull()
+    const dealt = continueAfterRound(next)
+    expect(dealt.roundIndex).toBe(1)
+    expect(dealt.phase).toBe('buy-window')
   })
 })
 
@@ -299,8 +348,8 @@ describe('goDown', () => {
       groupB.map((c) => c.id),
     ])
     expect(next.lastError).toBeNull()
-    expect(next.roundIndex).toBe(1)
-    expect(next.phase).toBe('buy-window')
+    expect(next.roundIndex).toBe(0)
+    expect(next.phase).toBe('round-end')
   })
 })
 
@@ -329,7 +378,37 @@ describe('extendMeld', () => {
     })
     const next = extendMeld(s, 'meld_0', 'b7')
     expect(next.lastError).toBeNull()
-    expect(next.roundIndex).toBe(1)
-    expect(next.phase).toBe('buy-window')
+    expect(next.roundIndex).toBe(0)
+    expect(next.phase).toBe('round-end')
+  })
+
+  it('pulls a wild out when a natural takes its rank, then undo restores both', () => {
+    const meld: Meld = {
+      id: 'meld_0',
+      ownerIndex: 1,
+      type: 'run',
+      cards: [
+        card('r3', 'red', 3),
+        card('w', 'wild', 0),
+        card('r5', 'red', 5),
+        card('r6', 'red', 6),
+      ],
+    }
+    const s = stubPlayState({
+      hand: [card('r4', 'red', 4), card('extra', 'blue', 9)],
+      hasGoneDown: true,
+      tableMetlds: [meld],
+    })
+    const played = extendMeld(s, 'meld_0', 'r4')
+    expect(played.lastError).toBeNull()
+    expect(played.pendingWild?.id).toBe('w')
+    expect(played.players[0].hand.map((c) => c.id)).toEqual(['extra'])
+    expect(played.tableMetlds[0].cards.map((c) => c.id)).toEqual(['r3', 'r4', 'r5', 'r6'])
+    expect(discard(played, 'extra').lastError).toBeTruthy()
+
+    const undone = undoExtend(played)
+    expect(undone.pendingWild).toBeNull()
+    expect(undone.players[0].hand.map((c) => c.id)).toContain('r4')
+    expect(undone.tableMetlds[0].cards.map((c) => c.id)).toEqual(['r3', 'w', 'r5', 'r6'])
   })
 })

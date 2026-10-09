@@ -12,6 +12,12 @@ export interface DrawFlightProps {
   faceDown?: boolean
   /** Fly via screen center with a brief hold (default true). */
   viaCenter?: boolean
+  /** Explicit landing center. Used when the destination card is not in the DOM yet. */
+  targetPoint?: { x: number; y: number } | null
+  /** Rotation of the set the card is joining, in degrees. */
+  endRotationDeg?: number
+  /** Scale at arrival relative to a full-size card. */
+  endScale?: number
 }
 
 // Match CSS variable values
@@ -32,6 +38,9 @@ function DrawFlightInner({
   onComplete,
   faceDown = false,
   viaCenter = true,
+  targetPoint = null,
+  endRotationDeg = 0,
+  endScale,
 }: DrawFlightProps) {
   const [phase, setPhase] = useState<Phase>('initial')
   const [tgtPos, setTgtPos] = useState<{ x: number; y: number } | null>(null)
@@ -66,9 +75,11 @@ function DrawFlightInner({
     default: // 'to-hand'
       posX = tgtPos?.x ?? ctrX
       posY = tgtPos?.y ?? ctrY
-      scale = faceDown ? 0.7 : 1
+      scale = endScale ?? (faceDown ? 0.7 : 1)
       break
   }
+
+  const rotation = phase === 'to-hand' ? endRotationDeg : 0
 
   const transition =
     phase === 'initial' || phase === 'hold'
@@ -86,6 +97,7 @@ function DrawFlightInner({
     let t4: ReturnType<typeof setTimeout> | undefined
 
     const measureTarget = () => {
+      if (targetPoint) return targetPoint
       const el = targetRefStable.current.current
       if (!el) return null
       const r = el.getBoundingClientRect()
@@ -132,7 +144,7 @@ function DrawFlightInner({
       if (t3 !== undefined) clearTimeout(t3)
       if (t4 !== undefined) clearTimeout(t4)
     }
-  }, [viaCenter])
+  }, [viaCenter, targetPoint])
 
   return (
     <div
@@ -143,7 +155,7 @@ function DrawFlightInner({
         width: CARD_W,
         height: CARD_H,
         transition,
-        transform: `scale(${scale})`,
+        transform: `rotate(${rotation}deg) scale(${scale})`,
         pointerEvents: 'none',
         zIndex: 1000,
         boxShadow:

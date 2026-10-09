@@ -11,7 +11,7 @@ export interface SeatDraft {
   avatarId: string
 }
 
-/** Where a played wild may be taken from. Does not affect gameplay yet. */
+/** Where a played wild may be taken from. */
 export type WildMoveFrom = 'runs' | 'runs-or-groups' | 'nowhere'
 
 /**

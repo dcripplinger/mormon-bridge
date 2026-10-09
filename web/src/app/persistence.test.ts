@@ -76,6 +76,10 @@ function stubGameState(): GameState {
     phase: 'draw',
     hasDrawnThisTurn: false,
     lastDiscarderIndex: null,
+    buyIntents: [],
+    extendHistory: [],
+    pendingWild: null,
+    roundVictorIndex: null,
     meldIdCounter: 0,
     lastError: null,
   }

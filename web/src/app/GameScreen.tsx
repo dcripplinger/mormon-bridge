@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { Card } from '../game/card'
 import {
   decideBuy,
@@ -18,33 +18,60 @@ import {
   swapWildEnd,
   type PrepSlot,
 } from '../game/go-down-prep'
+import {
+  DEFAULT_WILD_RULES,
+  allowsWildDisplacement,
+  legalAddEnds,
+  planMeldPlay,
+  wildHasHome,
+  type MeldEnd,
+  type WildRules,
+} from '../game/meld-play'
 import type { GameState, Meld } from '../game/state'
 import {
-  buyDiscard,
   canBuyDiscard,
+  declareBuy,
   claimDiscardAsDraw,
   discard,
   drawFromDeck,
+  continueAfterRound,
   extendMeld,
   goDown,
+  keepPendingWild,
   reorderHand,
   topDiscard,
+  undoExtend,
 } from '../game/state'
+import type { GameSettings } from './types'
 import AvatarView from '../ui/AvatarView'
+import {
+  BUY_BUBBLE_TEXT,
+  OUT_BUBBLE_TEXT,
+  NAME_BUBBLE_MS,
+  SpeechBubbleLayer,
+  buyBubbleRemainingMs,
+  type SpeechBubbleModel,
+  type SpeechBubbleSide,
+} from '../ui/speech-bubble'
 import CardPile from '../ui/CardPile'
 import DrawFlight from '../ui/DrawFlight'
 import GoDownPrep from '../ui/GoDownPrep'
+import { predictedSlotCenter } from '../ui/fan-end'
 import HandView from '../ui/HandView'
+import TableCallout from '../ui/TableCallout'
+import WildHold from '../ui/WildHold'
 import OpponentSeat, { SEAT_AVATAR_SIZE, SEAT_EDGE_INSET_PX } from '../ui/OpponentSeat'
 import PlayerSets from '../ui/PlayerSets'
 import ScoreBoard from '../ui/ScoreBoard'
 import SetZoomOverlay from '../ui/SetZoomOverlay'
+import type { SetZoomAnchor } from '../ui/SetZoomOverlay'
+import { placeOpponents } from '../ui/seat-layout'
+import { fanWidthFor } from '../ui/SetFan'
 import {
-  placeOpponents,
-  seatEdgeLeftPercent,
-  seatEdgeTopPercent,
-} from '../ui/seat-layout'
-import type { OpponentSeatPlacement, SeatSide } from '../ui/seat-layout'
+  humanHandVisiblePx,
+  orientedPocketLayout,
+  type SetRegion,
+} from '../ui/table-regions'
 import { FULL_CARD_H, useTableLayout } from '../ui/use-table-layout'
 import { usePortrait } from '../ui/use-portrait'
 
@@ -55,27 +82,42 @@ interface Props {
   onSave: (state: GameState) => void
   /** Called once when the game finishes (phase === 'game-end'); clears the save. */
   onGameEnd: () => void
+  settings?: GameSettings
+}
+
+function wildRulesOf(settings?: GameSettings): WildRules {
+  if (!settings) return DEFAULT_WILD_RULES
+  return { from: settings.wildMoveFrom, to: settings.wildMoveTo }
 }
 
 type Action =
-  | { type: 'BUY'; buyerIndex: number }
+  | { type: 'DECLARE_BUY'; buyerIndex: number }
   | { type: 'CLAIM_DISCARD' }
   | { type: 'DRAW_DECK' }
-  | { type: 'EXTEND'; meldId: string; cardId: string }
+  | { type: 'EXTEND'; meldId: string; cardId: string; side?: MeldEnd; rules: WildRules }
+  | { type: 'UNDO_EXTEND' }
+  | { type: 'KEEP_WILD' }
+  | { type: 'CONTINUE_ROUND' }
   | { type: 'DISCARD'; cardId: string }
   | { type: 'REORDER'; playerIndex: number; orderedIds: string[] }
   | { type: 'GO_DOWN'; meldCardArrays: string[][] }
 
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
-    case 'BUY':
-      return buyDiscard(state, action.buyerIndex)
+    case 'DECLARE_BUY':
+      return declareBuy(state, action.buyerIndex)
     case 'CLAIM_DISCARD':
       return claimDiscardAsDraw(state)
     case 'DRAW_DECK':
       return drawFromDeck(state)
     case 'EXTEND':
-      return extendMeld(state, action.meldId, action.cardId)
+      return extendMeld(state, action.meldId, action.cardId, action.side, action.rules)
+    case 'UNDO_EXTEND':
+      return undoExtend(state)
+    case 'KEEP_WILD':
+      return keepPendingWild(state)
+    case 'CONTINUE_ROUND':
+      return continueAfterRound(state)
     case 'DISCARD':
       return discard(state, action.cardId)
     case 'REORDER':
@@ -95,74 +137,43 @@ interface FlightItem {
   viaCenter?: boolean
   /** Card already in this player's hand — hide from seat until flight lands. */
   arrivalPlayerIndex?: number
-  /** Dispatch after the card arrives (AI discard). */
+  /** Card still in this player's hand — hide it until the flight lands and the action applies. */
+  leavingPlayerIndex?: number
+  /** Dispatch after the card arrives (AI discard or extend). */
   pendingAction?: Action
+  /** Screen center to land on when the destination card is not mounted yet. */
+  targetPoint?: { x: number; y: number } | null
+  endRotationDeg?: number
+  endScale?: number
+  /** Hide this card in its set until the flight arrives. */
+  concealCardId?: string
 }
 
-// ---------------------------------------------------------------------------
-// Seat-relative set-pocket positioning helpers
-// ---------------------------------------------------------------------------
-
-/** Match scale constants from OpponentSeat.tsx. */
-const SEAT_BASE_SCALE = 0.7
-const SEAT_CROWDED_SCALE = 0.58
-
-/**
- * Pixel distance from the screen edge to just inside the opponent seat's
- * card reach (used to position that player's set pocket).
- */
-function setsInwardPx(placement: OpponentSeatPlacement): number {
-  const scale = placement.sideCount > 1 ? SEAT_CROWDED_SCALE : SEAT_BASE_SCALE
-  return SEAT_EDGE_INSET_PX + (FULL_CARD_H * scale) / 2 + 8
-}
-
-/** Absolute position style for an opponent's set pocket on the table. */
-function setsPocketStyle(placement: OpponentSeatPlacement): React.CSSProperties {
-  const inset = setsInwardPx(placement)
-  const { side } = placement
-  if (side === 'left') {
-    return {
-      position: 'absolute',
-      left: inset,
-      top: `${seatEdgeTopPercent(placement)}%`,
-      transform: 'translateY(-50%)',
-      zIndex: 1,
-      pointerEvents: 'auto',
-    }
-  }
-  if (side === 'right') {
-    return {
-      position: 'absolute',
-      right: inset,
-      top: `${seatEdgeTopPercent(placement)}%`,
-      transform: 'translateY(-50%)',
-      zIndex: 1,
-      pointerEvents: 'auto',
-    }
-  }
-  // 'top'
-  return {
-    position: 'absolute',
-    top: inset,
-    left: `${seatEdgeLeftPercent(placement)}%`,
-    transform: 'translateX(-50%)',
-    zIndex: 1,
-    pointerEvents: 'auto',
-  }
-}
-
-/** Fans lay out horizontally for top/human; stacked vertically for left/right. */
-function setsDirection(side: SeatSide | 'human'): 'row' | 'column' {
-  return side === 'top' || side === 'human' ? 'row' : 'column'
+/** Share of a set region each fan may use, and the upright row width that results. */
+function pocketFanLayout(region: SetRegion, melds: Meld[], cardW: number): {
+  perFan: number
+  contentAlong: number
+} {
+  const sideways = region.rotationDeg === 90 || region.rotationDeg === -90
+  const along = (sideways ? region.rect.height : region.rect.width) - 8
+  const gap = 6
+  const perFan = Math.max(
+    1,
+    (along - gap * Math.max(0, melds.length - 1)) / Math.max(1, melds.length),
+  )
+  const contentAlong =
+    melds.reduce((sum, meld) => sum + fanWidthFor(cardW, meld.cards.length, perFan, meld.cards), 0) +
+    gap * Math.max(0, melds.length - 1)
+  return { perFan, contentAlong }
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function GameScreen({ initialState, onReturnToMenu, onSave, onGameEnd }: Props) {
+export default function GameScreen({ initialState, onReturnToMenu, onSave, onGameEnd, settings }: Props) {
+  const rules = useMemo(() => wildRulesOf(settings), [settings])
   const [state, dispatch] = useReducer(reducer, initialState)
-  const layout = useTableLayout()
 
   // Autosave on every state change; clear the save when the game ends.
   const onSaveRef = useRef(onSave)
@@ -178,10 +189,11 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   }, [state])
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [targetMeldId, setTargetMeldId] = useState<string | null>(null)
+  const [hoveredMeldId, setHoveredMeldId] = useState<string | null>(null)
+  const [hoveredMeldSide, setHoveredMeldSide] = useState<MeldEnd | null>(null)
   const [scoresOpen, setScoresOpen] = useState(false)
   const [discardHot, setDiscardHot] = useState(false)
-  const [zoomedMeld, setZoomedMeld] = useState<Meld | null>(null)
+  const [zoomedMeld, setZoomedMeld] = useState<SetZoomAnchor | null>(null)
   const portrait = usePortrait()
 
   // ---- Go-Down prep state ----
@@ -253,6 +265,26 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     humanPlayerIndex === -1
       ? []
       : placeOpponents(state.players.length, humanPlayerIndex, portrait)
+  const layout = useTableLayout(humanPlayerIndex, opponentSeats)
+  const handWrapRef = useRef<HTMLDivElement | null>(null)
+  const meldRefs = useRef(new Map<string, React.RefObject<HTMLDivElement | null>>())
+  const cardRefs = useRef(new Map<string, React.RefObject<HTMLDivElement | null>>())
+  const cardRefFor = (cardId: string) => {
+    let ref = cardRefs.current.get(cardId)
+    if (!ref) {
+      ref = { current: null }
+      cardRefs.current.set(cardId, ref)
+    }
+    return ref
+  }
+  const meldRefFor = (meldId: string) => {
+    let ref = meldRefs.current.get(meldId)
+    if (!ref) {
+      ref = { current: null }
+      meldRefs.current.set(meldId, ref)
+    }
+    return ref
+  }
 
   // Keep a live state ref so AI timers can bail if the window already closed.
   const stateRef = useRef(state)
@@ -269,143 +301,335 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     return map
   }, [state.tableMetlds])
 
-  // AI: buy-race for eligible bots + current-bot draw/play (paused while animating)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const bubbleSeq = useRef(0)
+  const [bubbles, setBubbles] = useState<SpeechBubbleModel[]>([])
+  const bubblesRef = useRef(bubbles)
+  bubblesRef.current = bubbles
+  const bubbleTimers = useRef<ReturnType<typeof setTimeout>[]>([])
+  const buyDismissScheduled = useRef<Set<number>>(new Set())
+  const [anchors, setAnchors] = useState<Record<number, { x: number; y: number }>>({})
+  const [callout, setCallout] = useState<{ text: string; tone: 'fanfare' | 'hint' } | null>(null)
+  const calloutTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const bootCallout = useRef(true)
+  const prevCalloutPhase = useRef(state.phase)
+  const announcedRound = useRef<number | null>(null)
+
+  const showFanfare = useCallback((text: string) => {
+    if (calloutTimer.current) clearTimeout(calloutTimer.current)
+    setCallout({ text, tone: 'fanfare' })
+    calloutTimer.current = setTimeout(() => {
+      setCallout((current) => (current?.tone === 'fanfare' && current.text === text ? null : current))
+    }, 1600)
+  }, [])
+
+  const showBubble = useCallback((playerIndex: number, text: string, kind: SpeechBubbleModel['kind']) => {
+    const id = ++bubbleSeq.current
+    const shownAt = Date.now()
+    setBubbles((prev) => [...prev, { id, playerIndex, text, shownAt, kind }])
+    if (kind === 'name' || kind === 'out') {
+      const timer = setTimeout(() => {
+        setBubbles((prev) => prev.filter((b) => b.id !== id))
+      }, NAME_BUBBLE_MS)
+      bubbleTimers.current.push(timer)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      for (const timer of bubbleTimers.current) clearTimeout(timer)
+    }
+  }, [])
+
+  // Buy bubbles leave only after the window closes and each has been up for 2s.
+  useEffect(() => {
+    if (state.phase === 'buy-window') return
+    const resolvedAt = Date.now()
+    for (const bubble of bubblesRef.current) {
+      if (bubble.kind !== 'buy') continue
+      if (buyDismissScheduled.current.has(bubble.id)) continue
+      buyDismissScheduled.current.add(bubble.id)
+      const wait = buyBubbleRemainingMs(bubble.shownAt, resolvedAt, resolvedAt) ?? 0
+      const timer = setTimeout(() => {
+        setBubbles((prev) => prev.filter((b) => b.id !== bubble.id))
+      }, wait)
+      bubbleTimers.current.push(timer)
+    }
+  }, [state.phase, state.currentPlayerIndex, state.roundIndex])
+
+  // Hold the finished table, let the player say they're out, then deal.
+  useEffect(() => {
+    if (state.phase !== 'round-end') return
+    const victor = state.roundVictorIndex
+    if (victor != null) showBubble(victor, OUT_BUBBLE_TEXT, 'out')
+    const timer = setTimeout(() => dispatch({ type: 'CONTINUE_ROUND' }), 1600)
+    return () => clearTimeout(timer)
+  }, [state.phase, state.roundIndex, state.roundVictorIndex, showBubble])
+
+  // Round open and the human's turn. Fresh deals name the round.
+  useEffect(() => {
+    const entered = prevCalloutPhase.current !== state.phase
+    prevCalloutPhase.current = state.phase
+    const freshDeal =
+      state.phase === 'buy-window' &&
+      state.tableMetlds.length === 0 &&
+      state.players.every((p) => !p.hasGoneDown) &&
+      state.currentPlayerIndex === humanPlayerIndex
+    const roundLine = freshDeal && announcedRound.current !== state.roundIndex
+    if (roundLine) announcedRound.current = state.roundIndex
+    if (bootCallout.current) {
+      bootCallout.current = false
+      if (state.phase === 'buy-window' && !currentPlayer.isAI) {
+        showFanfare(roundLine ? `Round ${state.roundIndex + 1} — your turn` : 'Your turn')
+      }
+      return
+    }
+    if (!entered || state.phase !== 'buy-window' || currentPlayer.isAI) return
+    showFanfare(roundLine ? `Round ${state.roundIndex + 1} — your turn` : 'Your turn')
+  }, [
+    state.phase,
+    state.roundIndex,
+    state.currentPlayerIndex,
+    state.tableMetlds,
+    state.players,
+    humanPlayerIndex,
+    currentPlayer.isAI,
+    showFanfare,
+  ])
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const root = rootRef.current
+      if (!root) return
+      const rootRect = root.getBoundingClientRect()
+      const next: Record<number, { x: number; y: number }> = {}
+      root.querySelectorAll<HTMLElement>('[data-avatar-anchor]').forEach((el) => {
+        const idx = Number(el.dataset.avatarAnchor)
+        if (Number.isNaN(idx)) return
+        const rect = el.getBoundingClientRect()
+        next[idx] = {
+          x: rect.left - rootRect.left + rect.width / 2,
+          y: rect.top - rootRect.top + rect.height / 2,
+        }
+      })
+      setAnchors(next)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [bubbles, portrait, state.currentPlayerIndex])
+
+  const flightTarget = useCallback((playerIndex: number) => {
+    return playerIndex === humanPlayerIndex ? endSlotRef : handAnchorRefs[playerIndex]
+  }, [handAnchorRefs, humanPlayerIndex])
+
+  const arrivalFor = useCallback((playerIndex: number) => {
+    return playerIndex === humanPlayerIndex ? undefined : playerIndex
+  }, [humanPlayerIndex])
+
+  const pushDrawFlights = useCallback((s: GameState, sourceRect?: DOMRect) => {
+    const next = drawFromDeck(s)
+    if (next.lastError) {
+      dispatch({ type: 'DRAW_DECK' })
+      return
+    }
+    const deckRect = sourceRect ?? deckWrapRef.current?.getBoundingClientRect()
+    const discardRect = discardWrapRef.current?.getBoundingClientRect()
+    const buyerIndex = s.phase === 'buy-window' ? s.buyIntents[0] : undefined
+
+    if (buyerIndex !== undefined) {
+      const topCard = topDiscard(s)
+      const oldIds = new Set(s.players[buyerIndex].hand.map((c) => c.id))
+      const gained = next.players[buyerIndex].hand.filter((c) => !oldIds.has(c.id))
+      const penalty = gained.find((c) => c.id !== topCard?.id) ?? null
+      const buyerTarget = flightTarget(buyerIndex)
+      if (discardRect && topCard && buyerTarget) {
+        enqueueFlight({
+          card: topCard,
+          sourceRect: discardRect,
+          targetRef: buyerTarget,
+          faceDown: false,
+          viaCenter: true,
+          arrivalPlayerIndex: arrivalFor(buyerIndex),
+        })
+      }
+      if (deckRect && penalty && buyerTarget) {
+        enqueueFlight({
+          card: penalty,
+          sourceRect: deckRect,
+          targetRef: buyerTarget,
+          faceDown: buyerIndex !== humanPlayerIndex,
+          viaCenter: true,
+          arrivalPlayerIndex: arrivalFor(buyerIndex),
+        })
+      }
+    }
+
+    const drawer = s.currentPlayerIndex
+    const oldDrawer = new Set(s.players[drawer].hand.map((c) => c.id))
+    const drawn = next.players[drawer].hand.find((c) => !oldDrawer.has(c.id)) ?? null
+    const drawerTarget = flightTarget(drawer)
+    if (deckRect && drawn && drawerTarget) {
+      enqueueFlight({
+        card: drawn,
+        sourceRect: deckRect,
+        targetRef: drawerTarget,
+        faceDown: drawer !== humanPlayerIndex,
+        viaCenter: true,
+        arrivalPlayerIndex: arrivalFor(drawer),
+      })
+    }
+    dispatch({ type: 'DRAW_DECK' })
+  }, [arrivalFor, enqueueFlight, flightTarget, humanPlayerIndex])
+
+  // Bots call buy on their own timers. Declaring does not reset the active player's wait.
+  const buyWindowKey = `${state.roundIndex}:${state.currentPlayerIndex}:${top?.id ?? ''}:${state.phase}`
+  useEffect(() => {
+    if (animBusy) return
+    if (state.phase !== 'buy-window') return
+    const timers: ReturnType<typeof setTimeout>[] = []
+    for (const p of state.players) {
+      if (!p.isAI) continue
+      if (!canBuyDiscard(state, p.index)) continue
+      if (!decideBuy(state, p.index)) continue
+      const delay = sampleBuyDelayMs()
+      timers.push(setTimeout(() => {
+        const s = stateRef.current
+        if (!canBuyDiscard(s, p.index)) return
+        dispatch({ type: 'DECLARE_BUY', buyerIndex: p.index })
+        showBubble(p.index, BUY_BUBBLE_TEXT, 'buy')
+      }, delay))
+    }
+    return () => {
+      for (const timer of timers) clearTimeout(timer)
+    }
+  }, [buyWindowKey, animBusy, showBubble])
+
+  // Active bot chooses claim (deny buys) or deck (resolve the first buy, then draw).
+  useEffect(() => {
+    if (animBusy) return
+    if (!currentPlayer.isAI) return
+    if (state.phase !== 'buy-window' && state.phase !== 'draw') return
+    const delay = state.phase === 'buy-window' ? sampleDrawWindowMs() : sampleThinkDelayMs()
+    const playerIndex = currentPlayer.index
+    const timer = setTimeout(() => {
+      const s = stateRef.current
+      if (s.currentPlayerIndex !== playerIndex) return
+      if (s.phase === 'buy-window') {
+        if (decideDraw(s) === 'claim') {
+          const rect = discardWrapRef.current?.getBoundingClientRect()
+          const topCard = topDiscard(s)
+          const targetRef = handAnchorRefs[playerIndex]
+          dispatch({ type: 'CLAIM_DISCARD' })
+          if (rect && topCard && targetRef) {
+            enqueueFlight({
+              card: topCard,
+              sourceRect: rect,
+              targetRef,
+              faceDown: false,
+              viaCenter: true,
+              arrivalPlayerIndex: playerIndex,
+            })
+          }
+        } else {
+          pushDrawFlights(s)
+        }
+      } else if (s.phase === 'draw') {
+        pushDrawFlights(s)
+      }
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [
+    animBusy,
+    currentPlayer.index,
+    currentPlayer.isAI,
+    enqueueFlight,
+    handAnchorRefs,
+    pushDrawFlights,
+    state.phase,
+    state.roundIndex,
+  ])
+
+  const rotationForMeld = useCallback((meldId: string) => {
+    const meld = stateRef.current.tableMetlds.find((m) => m.id === meldId)
+    if (!meld || meld.ownerIndex === humanPlayerIndex) return 0
+    return layout.regions.find((region) => region.playerIndex === meld.ownerIndex)?.rotationDeg ?? 0
+  }, [humanPlayerIndex, layout.regions])
+
+  const beginExtendFlight = useCallback((
+    card: Card,
+    meldId: string,
+    sourceRect: DOMRect,
+    side?: MeldEnd,
+    leavingPlayerIndex?: number,
+  ) => {
+    const s = stateRef.current
+    const preview = extendMeld(s, meldId, card.id, side, rules)
+    if (preview.lastError) return
+    const endsRound = preview.roundIndex !== s.roundIndex || preview.phase === 'game-end'
+    const rotation = rotationForMeld(meldId)
+    const scale = layout.setCardW / 64
+    const action = {
+      type: 'EXTEND' as const,
+      meldId,
+      cardId: card.id,
+      side,
+      rules,
+    }
+    if (endsRound) {
+      const fan = document.querySelector<HTMLElement>(`[data-meld-id="${CSS.escape(meldId)}"]`)
+      const meld = s.tableMetlds.find((m) => m.id === meldId)
+      const ownerMelds = s.tableMetlds.filter((m) => m.ownerIndex === meld?.ownerIndex)
+      const region = layout.regions.find((r) => r.playerIndex === meld?.ownerIndex)
+      const perFan = region ? pocketFanLayout(region, ownerMelds, layout.setCardW).perFan : layout.setCardW
+      const plan = meld
+        ? planMeldPlay(
+            meld.cards,
+            meld.type,
+            card,
+            side,
+            allowsWildDisplacement(rules, meld.type),
+          )
+        : null
+      const targetPoint = fan && plan
+        ? predictedSlotCenter(fan, plan.index, plan.cards, layout.setCardW, perFan, rotation)
+        : null
+      enqueueFlight({
+        card,
+        sourceRect,
+        targetRef: meldRefFor(meldId),
+        targetPoint,
+        faceDown: false,
+        viaCenter: false,
+        endRotationDeg: rotation,
+        endScale: scale,
+        leavingPlayerIndex,
+        pendingAction: action,
+      })
+      return
+    }
+    dispatch(action)
+    enqueueFlight({
+      card,
+      sourceRect,
+      targetRef: cardRefFor(card.id),
+      faceDown: false,
+      viaCenter: false,
+      endRotationDeg: rotation,
+      endScale: scale,
+      concealCardId: card.id,
+      leavingPlayerIndex,
+    })
+  }, [enqueueFlight, layout.regions, layout.setCardW, rotationForMeld, rules])
+
+  // AI: current-bot play (paused while animating)
   useEffect(() => {
     if (animBusy) return
     if (state.phase === 'game-end' || state.phase === 'round-end') return
 
     const timers: ReturnType<typeof setTimeout>[] = []
 
-    const animateAiDrawDeck = (playerIndex: number) => {
-      const s = stateRef.current
-      const rect = deckWrapRef.current?.getBoundingClientRect()
-      const topCard =
-        s.drawPile.length > 0 ? s.drawPile[s.drawPile.length - 1] : null
-      const targetRef = handAnchorRefs[playerIndex]
-      dispatch({ type: 'DRAW_DECK' })
-      if (rect && topCard && targetRef) {
-        enqueueFlight({
-          card: topCard,
-          sourceRect: rect,
-          targetRef,
-          faceDown: true,
-          viaCenter: true,
-          arrivalPlayerIndex: playerIndex,
-        })
-      }
-    }
-
-    const animateAiClaim = (playerIndex: number) => {
-      const s = stateRef.current
-      const rect = discardWrapRef.current?.getBoundingClientRect()
-      const topCard = topDiscard(s)
-      const targetRef = handAnchorRefs[playerIndex]
-      dispatch({ type: 'CLAIM_DISCARD' })
-      if (rect && topCard && targetRef) {
-        enqueueFlight({
-          card: topCard,
-          sourceRect: rect,
-          targetRef,
-          faceDown: false,
-          viaCenter: true,
-          arrivalPlayerIndex: playerIndex,
-        })
-      }
-    }
-
-    const animateAiBuy = (buyerIndex: number) => {
-      const s = stateRef.current
-      if (!canBuyDiscard(s, buyerIndex)) return
-      const discardRect = discardWrapRef.current?.getBoundingClientRect()
-      const deckRect = deckWrapRef.current?.getBoundingClientRect()
-      const topCard = topDiscard(s)
-      const targetRef = handAnchorRefs[buyerIndex]
-      const nextState = buyDiscard(s, buyerIndex)
-      const oldHandIds = new Set(s.players[buyerIndex].hand.map((c) => c.id))
-      const penaltyCard =
-        nextState.players[buyerIndex].hand.find(
-          (c) => c.id !== topCard?.id && !oldHandIds.has(c.id),
-        ) ?? null
-
-      dispatch({ type: 'BUY', buyerIndex })
-
-      if (discardRect && topCard && targetRef) {
-        enqueueFlight({
-          card: topCard,
-          sourceRect: discardRect,
-          targetRef,
-          faceDown: false,
-          viaCenter: true,
-          arrivalPlayerIndex: buyerIndex,
-        })
-      }
-      if (deckRect && penaltyCard && targetRef) {
-        enqueueFlight({
-          card: penaltyCard,
-          sourceRect: deckRect,
-          targetRef,
-          faceDown: true,
-          viaCenter: true,
-          arrivalPlayerIndex: buyerIndex,
-        })
-      }
-      // Current player also drew from the deck as part of buyDiscard —
-      // animate that card to the current seat when the buyer is not current.
-      const currentIdx = s.currentPlayerIndex
-      const currentOldIds = new Set(s.players[currentIdx].hand.map((c) => c.id))
-      const currentDrawn =
-        nextState.players[currentIdx].hand.find((c) => !currentOldIds.has(c.id)) ?? null
-      const currentTarget = handAnchorRefs[currentIdx]
-      if (deckRect && currentDrawn && currentTarget) {
-        enqueueFlight({
-          card: currentDrawn,
-          sourceRect: deckRect,
-          targetRef: currentTarget,
-          faceDown: currentIdx !== humanPlayerIndex,
-          viaCenter: true,
-          arrivalPlayerIndex: currentIdx,
-        })
-      }
-    }
-
-    if (state.phase === 'buy-window') {
-      for (const p of state.players) {
-        if (!p.isAI) continue
-        if (!canBuyDiscard(state, p.index)) continue
-        if (!decideBuy(state, p.index)) continue
-        const delay = sampleBuyDelayMs()
-        timers.push(
-          setTimeout(() => {
-            const s = stateRef.current
-            if (!canBuyDiscard(s, p.index)) return
-            animateAiBuy(p.index)
-          }, delay),
-        )
-      }
-
-      if (currentPlayer.isAI) {
-        const delay = sampleDrawWindowMs()
-        timers.push(
-          setTimeout(() => {
-            const s = stateRef.current
-            if (s.phase !== 'buy-window' && s.phase !== 'draw') return
-            if (s.currentPlayerIndex !== currentPlayer.index) return
-            const choice = decideDraw(s)
-            if (choice === 'claim') animateAiClaim(currentPlayer.index)
-            else animateAiDrawDeck(currentPlayer.index)
-          }, delay),
-        )
-      }
-    } else if (state.phase === 'draw' && currentPlayer.isAI) {
-      const delay = sampleThinkDelayMs()
-      timers.push(
-        setTimeout(() => {
-          const s = stateRef.current
-          if (s.phase !== 'draw') return
-          animateAiDrawDeck(currentPlayer.index)
-        }, delay),
-      )
-    } else if (state.phase === 'play-or-discard' && currentPlayer.isAI) {
+    if (state.phase === 'play-or-discard' && currentPlayer.isAI) {
       const delay = sampleThinkDelayMs()
       timers.push(
         setTimeout(() => {
@@ -413,7 +637,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           if (s.phase !== 'play-or-discard') return
           if (s.players[s.currentPlayerIndex]?.index !== currentPlayer.index) return
 
-          const plan = decidePlay(s)
+          const plan = decidePlay(s, Math.random, rules)
           const step = plan.steps[0]
           if (!step) return
 
@@ -422,8 +646,24 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             return
           }
 
+          if (step.type === 'keep-wild') {
+            dispatch({ type: 'KEEP_WILD' })
+            return
+          }
+
           if (step.type === 'extend') {
-            dispatch({ type: 'EXTEND', meldId: step.meldId, cardId: step.cardId })
+            const player = s.players[s.currentPlayerIndex]
+            const card =
+              player.hand.find((c) => c.id === step.cardId) ??
+              (s.pendingWild?.id === step.cardId ? s.pendingWild : undefined)
+            if (!card) return
+            const fromWild = s.pendingWild?.id === card.id
+            const seatEl = handAnchorRefs[player.index]?.current
+            const sourceRect = fromWild
+              ? new DOMRect(window.innerWidth / 2 - 32, window.innerHeight * 0.42 - 48, 64, 96)
+              : (seatEl?.getBoundingClientRect() ??
+                new DOMRect(window.innerWidth / 2, window.innerHeight / 2, 64, 96))
+            beginExtendFlight(card, step.meldId, sourceRect, step.side, fromWild ? undefined : player.index)
             return
           }
 
@@ -452,7 +692,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     return () => {
       for (const t of timers) clearTimeout(t)
     }
-  }, [state, currentPlayer, animBusy, humanPlayerIndex, handAnchorRefs, enqueueFlight])
+  }, [state, currentPlayer, animBusy, humanPlayerIndex, handAnchorRefs, enqueueFlight, rules, beginExtendFlight])
 
   const toggleCard = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -463,27 +703,9 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     })
   }, [])
 
-  const clearSelection = () => {
-    setSelectedIds(new Set())
-    setTargetMeldId(null)
-  }
-
   const handleDrawDeck = useCallback((sourceRect?: DOMRect) => {
-    const rect = sourceRect ?? deckWrapRef.current?.getBoundingClientRect()
-    const topCard = state.drawPile.length > 0
-      ? state.drawPile[state.drawPile.length - 1]
-      : null
-    dispatch({ type: 'DRAW_DECK' })
-    if (rect && topCard) {
-      enqueueFlight({
-        card: topCard,
-        sourceRect: rect,
-        targetRef: endSlotRef,
-        faceDown: false,
-        viaCenter: true,
-      })
-    }
-  }, [state.drawPile, enqueueFlight])
+    pushDrawFlights(state, sourceRect)
+  }, [pushDrawFlights, state])
 
   const handleClaimDiscard = useCallback((sourceRect?: DOMRect) => {
     const rect = sourceRect ?? discardWrapRef.current?.getBoundingClientRect()
@@ -502,49 +724,35 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
 
   const handleBuy = useCallback(() => {
     if (humanPlayerIndex === -1) return
-    const discardRect = discardWrapRef.current?.getBoundingClientRect()
-    const deckRect = deckWrapRef.current?.getBoundingClientRect()
-    const topCard = topDiscard(state)
+    const next = declareBuy(state, humanPlayerIndex)
+    dispatch({ type: 'DECLARE_BUY', buyerIndex: humanPlayerIndex })
+    if (!next.lastError) showBubble(humanPlayerIndex, BUY_BUBBLE_TEXT, 'buy')
+  }, [state, humanPlayerIndex, showBubble])
 
-    const nextState = buyDiscard(state, humanPlayerIndex)
-    const oldHandIds = new Set(state.players[humanPlayerIndex].hand.map((c) => c.id))
-    const penaltyCard =
-      nextState.players[humanPlayerIndex].hand.find(
-        (c) => c.id !== topCard?.id && !oldHandIds.has(c.id),
-      ) ?? null
-
-    dispatch({ type: 'BUY', buyerIndex: humanPlayerIndex })
-
-    if (discardRect && topCard) {
-      enqueueFlight({
-        card: topCard,
-        sourceRect: discardRect,
-        targetRef: endSlotRef,
-        faceDown: false,
-        viaCenter: true,
-      })
-    }
-
-    if (deckRect && penaltyCard) {
-      enqueueFlight({
-        card: penaltyCard,
-        sourceRect: deckRect,
-        targetRef: endSlotRef,
-        faceDown: false,
-        viaCenter: true,
-      })
-    }
-  }, [state, humanPlayerIndex, enqueueFlight])
-
-  const handleExtend = (meldId: string) => {
-    if (selectedIds.size !== 1) {
-      setTargetMeldId(meldId)
-      return
-    }
-    const cardId = [...selectedIds][0]
-    dispatch({ type: 'EXTEND', meldId, cardId })
-    clearSelection()
-  }
+  const handleDropToMeld = useCallback((
+    cardId: string,
+    meldId: string,
+    sourceRect: DOMRect,
+    side?: MeldEnd,
+  ) => {
+    if (humanPlayerIndex === -1) return
+    const player = state.players[humanPlayerIndex]
+    if (!player || player.isAI || !player.hasGoneDown) return
+    if (state.phase !== 'play-or-discard' || state.currentPlayerIndex !== humanPlayerIndex) return
+    const card = state.pendingWild?.id === cardId
+      ? state.pendingWild
+      : player.hand.find((c) => c.id === cardId)
+    if (!card) return
+    setHoveredMeldId(null)
+    setHoveredMeldSide(null)
+    beginExtendFlight(
+      card,
+      meldId,
+      sourceRect,
+      side,
+      state.pendingWild?.id === cardId ? undefined : humanPlayerIndex,
+    )
+  }, [beginExtendFlight, humanPlayerIndex, state.currentPlayerIndex, state.pendingWild, state.phase, state.players])
 
   const handleReorder = useCallback(
     (orderedIds: string[]) => {
@@ -573,24 +781,31 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       next.delete(cardId)
       return next
     })
-    setTargetMeldId(null)
+    setHoveredMeldId(null)
     setDiscardHot(false)
   }, [])
 
-  // If a meld target is selected and exactly one card is selected, extend it.
-  useEffect(() => {
-    if (targetMeldId && selectedIds.size === 1) {
-      const cardId = [...selectedIds][0]
-      dispatch({ type: 'EXTEND', meldId: targetMeldId, cardId })
-      clearSelection()
-    }
-  }, [targetMeldId, selectedIds])
-
-  // Open the zoom overlay for a meld (opponent tap, or human tap outside extend phase).
-  const zoomMeld = useCallback((meldId: string) => {
+  // Pop a set up from its place on the table.
+  const zoomMeld = useCallback((meldId: string, rotationDeg: number) => {
     const meld = state.tableMetlds.find((m) => m.id === meldId)
-    if (meld) setZoomedMeld(meld)
-  }, [state.tableMetlds])
+    const fan = document.querySelector<HTMLElement>(
+      `[data-meld-id="${CSS.escape(meldId)}"]`,
+    )
+    if (!meld || !fan) return
+    const rect = fan.getBoundingClientRect()
+    const cardEl = fan.firstElementChild as HTMLElement | null
+    setZoomedMeld({
+      meld,
+      rotationDeg,
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2,
+      width: fan.offsetWidth,
+      height: fan.offsetHeight,
+      cardW: cardEl?.offsetWidth || layout.setCardW,
+      cardH: cardEl?.offsetHeight || layout.setCardH,
+      cardRadius: layout.setCardRadius,
+    })
+  }, [state.tableMetlds, layout.setCardW, layout.setCardH, layout.setCardRadius])
 
   // ---- Go-Down prep handlers ----
 
@@ -777,15 +992,20 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const canDrawDeck = isHumanTurn && (isBuyWindow || state.phase === 'draw') && !animBusy
   const canClaimDiscard = isHumanTurn && isBuyWindow && !animBusy
   const canBuy = humanPlayerIndex !== -1 && canBuyDiscard(state, humanPlayerIndex) && !animBusy
-  const canDiscardDrag = isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen
+  const canDiscardDrag =
+    isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen && !state.pendingWild
   const canReorderHand = humanPlayerIndex !== -1 && !animBusy
-  const canSelectCards = isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen
-  /** Whether the human can extend melds on the table. */
-  const canExtend =
+  const canSelectCards =
+    isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen && !state.pendingWild
+  const canPlayOntoSets =
+    !animBusy &&
+    !prepOpen &&
     humanPlayerIndex !== -1 &&
     isHumanTurn &&
     isPlayOrDiscard &&
     state.players[humanPlayerIndex].hasGoneDown
+  /** Hand drags onto sets. A held wild is dragged from the table center instead. */
+  const canExtend = canPlayOntoSets && !state.pendingWild
   /** Whether the GO DOWN button is available. */
   const canGoDown =
     !prepOpen &&
@@ -815,6 +1035,9 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const visibleOpponentCount = (playerIndex: number, handLength: number): number => {
     let n = handLength - (arrivalCounts.get(playerIndex) ?? 0)
     if (pendingDiscard?.playerIndex === playerIndex) n -= 1
+    for (const flight of flightQueue) {
+      if (flight.leavingPlayerIndex === playerIndex) n -= 1
+    }
     return Math.max(0, n)
   }
 
@@ -826,24 +1049,60 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   //   hand height = 1.4×card (two overlapping rows)
   //   hang         = card/3 + handExtraHang  (off-screen)
   //   visible      = 1.4×card - hang
-  const handVisibleH = FULL_CARD_H * (1.4 - 1 / 3) - layout.handExtraHang
-  // Human set strip sits 8px above the visible hand top.
-  const humanSetsBottom = Math.round(handVisibleH + 8)
+  const handVisibleH = humanHandVisiblePx(layout.handExtraHang)
   // Bottom offset for the hand wrapper (negative = hang below fold).
   const handBottomOffset = -(FULL_CARD_H / 3 + layout.handExtraHang)
 
-  // Per-side max fan widths — scale with set card width.
-  const humanFanW = Math.round(layout.setCardW * 2.5 + 10)
-  const sideFanW = Math.round(layout.setCardW * 2.0 + 8)
-  const topFanW = Math.round(layout.setCardW * 2.2 + 8)
+  const cardForPlay = (cardId: string): Card | undefined => {
+    if (state.pendingWild?.id === cardId) return state.pendingWild
+    if (humanPlayerIndex === -1) return undefined
+    return state.players[humanPlayerIndex]?.hand.find((c) => c.id === cardId)
+  }
 
-  const opponentFanW = (side: SeatSide): number =>
-    side === 'top' ? topFanW : sideFanW
+  const canDropToMeld = (cardId: string, meldId: string) => {
+    if (!canPlayOntoSets) return false
+    if (state.pendingWild && state.pendingWild.id !== cardId) return false
+    const card = cardForPlay(cardId)
+    const meld = state.tableMetlds.find((m) => m.id === meldId)
+    if (!card || !meld) return false
+    const plan = planMeldPlay(
+      meld.cards,
+      meld.type,
+      card,
+      undefined,
+      allowsWildDisplacement(rules, meld.type),
+    )
+    if (!plan) return false
+    if (!plan.displacedWild) return true
+    const nextMelds = state.tableMetlds.map((m) =>
+      m.id === meld.id ? { ...m, cards: plan.cards } : m,
+    )
+    return wildHasHome(nextMelds, plan.displacedWild, rules, meld.id)
+  }
 
-  const humanMelds = humanPlayerIndex !== -1 ? (meldsByPlayer.get(humanPlayerIndex) ?? []) : []
+  const meldEnds = (cardId: string, meldId: string): MeldEnd[] => {
+    const card = cardForPlay(cardId)
+    const meld = state.tableMetlds.find((m) => m.id === meldId)
+    if (!card || !meld) return []
+    const plan = planMeldPlay(
+      meld.cards,
+      meld.type,
+      card,
+      undefined,
+      allowsWildDisplacement(rules, meld.type),
+    )
+    if (plan?.displacedWild) return [plan.side]
+    return legalAddEnds(meld.cards, meld.type, card)
+  }
+
+  const bubbleSide = (playerIndex: number): SpeechBubbleSide => {
+    if (playerIndex === humanPlayerIndex) return 'bottom'
+    return opponentSeats.find((seat) => seat.playerIndex === playerIndex)?.side ?? 'top'
+  }
 
   return (
     <div
+      ref={rootRef}
       style={{
         position: 'relative',
         height: '100%',
@@ -872,55 +1131,55 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               cardCount={visibleOpponentCount(player.index, player.hand.length)}
               isCurrent={player.index === state.currentPlayerIndex}
               handAnchorRef={handAnchorRefs[player.index]}
+              onRevealName={() => showBubble(player.index, player.displayName, 'name')}
             />
           )
         })}
 
-        {/* Opponent set pockets — just inside each seat's inward card reach */}
-        {opponentSeats.map((placement) => {
-          const player = state.players[placement.playerIndex]
-          if (!player) return null
-          const melds = meldsByPlayer.get(player.index) ?? []
+        {/* Set pockets share the pile layer and stay outside the deck and discard. */}
+        {layout.regions.map((region) => {
+          const melds = meldsByPlayer.get(region.playerIndex) ?? []
           if (melds.length === 0) return null
+          const { perFan, contentAlong } = pocketFanLayout(region, melds, layout.setCardW)
+          const box = orientedPocketLayout(
+            region.rect,
+            region.rotationDeg,
+            contentAlong,
+            layout.setCardH,
+          )
           return (
-            <div key={`sets-${player.index}`} style={setsPocketStyle(placement)}>
+            <div
+              key={`sets-${region.playerIndex}`}
+              data-set-region={region.side}
+              style={{
+                position: 'absolute',
+                left: box.left,
+                top: box.top,
+                width: box.width,
+                height: box.height,
+                transform: box.transform,
+                transformOrigin: 'center center',
+                zIndex: 1,
+                pointerEvents: 'none',
+              }}
+            >
               <PlayerSets
                 melds={melds}
-                direction={setsDirection(placement.side)}
+                direction="row"
                 cardW={layout.setCardW}
                 cardH={layout.setCardH}
                 cardRadius={layout.setCardRadius}
-                maxFanWidth={opponentFanW(placement.side)}
-                onTap={zoomMeld}
+                maxFanWidth={perFan}
+                targetMeldId={hoveredMeldId}
+                activeEnd={hoveredMeldSide}
+                hiddenCardId={activeFlightItem?.concealCardId ?? null}
+                cardRefFor={cardRefFor}
+                onTap={(meldId) => zoomMeld(meldId, region.rotationDeg)}
+                fanRefFor={meldRefFor}
               />
             </div>
           )
         })}
-
-        {/* Human set strip — above the visible hand, centered */}
-        {humanMelds.length > 0 && humanPlayerIndex !== -1 && (
-          <div
-            style={{
-              position: 'absolute',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              bottom: humanSetsBottom,
-              zIndex: 1,
-              pointerEvents: 'auto',
-            }}
-          >
-            <PlayerSets
-              melds={humanMelds}
-              direction="row"
-              cardW={layout.setCardW}
-              cardH={layout.setCardH}
-              cardRadius={layout.setCardRadius}
-              maxFanWidth={humanFanW}
-              targetMeldId={targetMeldId}
-              onTap={canExtend ? handleExtend : zoomMeld}
-            />
-          </div>
-        )}
 
         {/* Draw + discard + Buy — center of the table.
             The outer div positions the anchor; the inner div centers and scales. */}
@@ -1149,6 +1408,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         )}
 
         <div
+          ref={handWrapRef}
           style={{
             position: 'absolute',
             left: 0,
@@ -1171,7 +1431,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             inflightCardIds={
               new Set([
                 ...flightQueue
-                  .filter((f) => f.arrivalPlayerIndex === undefined && f.targetRef === endSlotRef)
+                  .filter((f) =>
+                    f.leavingPlayerIndex === humanPlayerIndex ||
+                    (f.arrivalPlayerIndex === undefined && f.targetRef === endSlotRef),
+                  )
                   .map((f) => f.card.id),
                 ...returningCardIds,
               ])
@@ -1187,11 +1450,35 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             onDropToSlot={prepOpen ? handleDropToSlot : undefined}
             canDropToSlot={prepOpen ? canDropToSlot : undefined}
             onPrepSlotHoverChange={prepOpen ? setPrepHoveredSlotIndex : undefined}
+            meldDropZones={
+              canExtend
+                ? state.tableMetlds.map((meld) => ({
+                    meldId: meld.id,
+                    ref: meldRefFor(meld.id),
+                    rotationDeg: rotationForMeld(meld.id),
+                  }))
+                : undefined
+            }
+            canDropToMeld={canExtend ? canDropToMeld : undefined}
+            meldEnds={canExtend ? meldEnds : undefined}
+            onMeldHoverChange={
+              canExtend
+                ? (meldId, side) => {
+                    setHoveredMeldId(meldId)
+                    setHoveredMeldSide(side ?? null)
+                  }
+                : undefined
+            }
+            onDropToMeld={canExtend ? handleDropToMeld : undefined}
+            showUndo={canPlayOntoSets}
+            canUndo={canPlayOntoSets && state.extendHistory.length > 0}
+            onUndo={() => dispatch({ type: 'UNDO_EXTEND' })}
           />
         </div>
 
         {humanPlayerIndex !== -1 && (
           <div
+            data-avatar-anchor={humanPlayerIndex}
             style={{
               position: 'absolute',
               left: '50%',
@@ -1212,6 +1499,38 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         )}
       </div>
 
+      {state.pendingWild && canPlayOntoSets && (
+        <WildHold
+          card={state.pendingWild}
+          topPct={layout.pileTopPct}
+          zones={state.tableMetlds.map((meld) => ({
+            meldId: meld.id,
+            ref: meldRefFor(meld.id),
+            rotationDeg: rotationForMeld(meld.id),
+          }))}
+          canDrop={(meldId) => canDropToMeld(state.pendingWild!.id, meldId)}
+          endsFor={(meldId) => meldEnds(state.pendingWild!.id, meldId)}
+          onHover={(meldId, side) => {
+            setHoveredMeldId(meldId)
+            setHoveredMeldSide(side ?? null)
+          }}
+          onDrop={(meldId, side, rect) => {
+            if (!state.pendingWild) return
+            handleDropToMeld(state.pendingWild.id, meldId, rect, side)
+          }}
+          handRef={rules.to === 'any-meld-or-hand' ? handWrapRef : undefined}
+          onKeep={
+            rules.to === 'any-meld-or-hand'
+              ? () => dispatch({ type: 'KEEP_WILD' })
+              : undefined
+          }
+        />
+      )}
+
+      <TableCallout text={callout?.text ?? null} tone={callout?.tone ?? 'fanfare'} top={layout.pileTopPct} />
+
+      <SpeechBubbleLayer bubbles={bubbles} anchors={anchors} sideFor={bubbleSide} />
+
       <ScoreBoard
         players={state.players}
         currentPlayerIndex={state.currentPlayerIndex}
@@ -1228,18 +1547,15 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           targetRef={activeFlightItem.targetRef}
           faceDown={activeFlightItem.faceDown}
           viaCenter={activeFlightItem.viaCenter}
+          targetPoint={activeFlightItem.targetPoint}
+          endRotationDeg={activeFlightItem.endRotationDeg}
+          endScale={activeFlightItem.endScale}
           onComplete={handleFlightComplete}
         />
       )}
 
-      {/* Zoom overlay — tap outside or press Escape to dismiss */}
       <SetZoomOverlay
-        meld={zoomedMeld}
-        playerName={
-          zoomedMeld != null
-            ? state.players[zoomedMeld.ownerIndex]?.displayName
-            : undefined
-        }
+        anchor={zoomedMeld}
         onClose={() => setZoomedMeld(null)}
       />
     </div>

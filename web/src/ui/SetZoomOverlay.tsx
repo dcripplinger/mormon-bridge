@@ -1,103 +1,131 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { Meld } from '../game/state'
-import CardView from './CardView'
+import SetFan from './SetFan'
+
+export interface SetZoomAnchor {
+  meld: Meld
+  rotationDeg: number
+  centerX: number
+  centerY: number
+  width: number
+  height: number
+  cardW: number
+  cardH: number
+  cardRadius: number
+}
 
 interface SetZoomOverlayProps {
-  meld: Meld | null
-  playerName?: string
+  anchor: SetZoomAnchor | null
   onClose: () => void
 }
 
-/** Card size shown in the zoom overlay — use full card size for max readability. */
-const ZOOM_CARD_W = 64
-const ZOOM_CARD_H = 96
+const FULL_CARD_W = 64
+/** Zoom past a hand card so a tapped set reads clearly. */
+const POP_FACTOR = 1.85
 
-export default function SetZoomOverlay({ meld, playerName, onClose }: SetZoomOverlayProps) {
-  // Dismiss on Escape key.
+/**
+ * Uniform scale that enlarges a table fan well past hand size, still inside the viewport.
+ * Sideways fans swap width and height.
+ */
+export function poppedSetScale(
+  layoutW: number,
+  layoutH: number,
+  rotationDeg: number,
+  cardW: number,
+  viewportW: number,
+  viewportH: number,
+): number {
+  const sideways = Math.abs(rotationDeg) === 90
+  const visW = Math.max(1, sideways ? layoutH : layoutW)
+  const visH = Math.max(1, sideways ? layoutW : layoutH)
+  const margin = 12
+  const fit = Math.min(
+    Math.max(1, viewportW - margin * 2) / visW,
+    Math.max(1, viewportH - margin * 2) / visH,
+  )
+  const fullCard = cardW > 0 ? (FULL_CARD_W * POP_FACTOR) / cardW : fit
+  return Math.max(1, Math.min(fit, fullCard))
+}
+
+export default function SetZoomOverlay({ anchor, onClose }: SetZoomOverlayProps) {
+  const [grown, setGrown] = useState(false)
+  const [viewport, setViewport] = useState(() => ({
+    w: typeof window !== 'undefined' ? window.innerWidth : 400,
+    h: typeof window !== 'undefined' ? window.innerHeight : 700,
+  }))
+
   useEffect(() => {
-    if (!meld) return
+    if (!anchor) return
+    setGrown(false)
+    let inner = 0
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setGrown(true))
+    })
+    return () => {
+      cancelAnimationFrame(outer)
+      cancelAnimationFrame(inner)
+    }
+  }, [anchor])
+
+  useEffect(() => {
+    if (!anchor) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [meld, onClose])
+  }, [anchor, onClose])
 
-  if (!meld) return null
+  useEffect(() => {
+    const update = () => setViewport({ w: window.innerWidth, h: window.innerHeight })
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
 
-  const typeLabel = meld.type === 'group' ? 'Group' : 'Run'
-  const cardCount = meld.cards.length
+  if (!anchor) return null
+
+  const scale = poppedSetScale(
+    anchor.width,
+    anchor.height,
+    anchor.rotationDeg,
+    anchor.cardW,
+    viewport.w,
+    viewport.h,
+  )
+  const shown = grown ? scale : 1
 
   return (
-    /* Backdrop — tap outside the card to dismiss */
     <div
       onClick={onClose}
       style={{
         position: 'absolute',
         inset: 0,
         zIndex: 100,
-        background: 'rgba(0,0,0,0.72)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        background: 'transparent',
       }}
     >
-      {/* Panel — stop propagation so tapping cards doesn't close */}
       <div
-        onClick={(e) => e.stopPropagation()}
+        data-set-zoom
         style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 14,
-          padding: '14px 16px 16px',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 10,
-          maxWidth: '92vw',
+          position: 'fixed',
+          left: anchor.centerX,
+          top: anchor.centerY,
+          width: anchor.width,
+          height: anchor.height,
+          transform: `translate(-50%, -50%) rotate(${anchor.rotationDeg}deg) scale(${shown})`,
+          transformOrigin: 'center center',
+          transition: 'transform 220ms cubic-bezier(0.2, 0.85, 0.2, 1)',
+          pointerEvents: 'none',
         }}
       >
-        {/* Header */}
-        <div
-          style={{
-            fontSize: '0.8rem',
-            color: 'var(--text-dim)',
-            textAlign: 'center',
-            lineHeight: 1.4,
-          }}
-        >
-          {playerName ? `${playerName} — ` : ''}
-          {typeLabel} &middot; {cardCount} {cardCount === 1 ? 'card' : 'cards'}
-        </div>
-
-        {/* Cards — wrap if there are many */}
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 6,
-            justifyContent: 'center',
-          }}
-        >
-          {meld.cards.map((card) => (
-            <CardView
-              key={card.id}
-              card={card}
-              style={{ width: ZOOM_CARD_W, height: ZOOM_CARD_H }}
-            />
-          ))}
-        </div>
-
-        {/* Dismiss hint */}
-        <div
-          style={{
-            fontSize: '0.7rem',
-            color: 'var(--text-dim)',
-            opacity: 0.6,
-          }}
-        >
-          Tap outside to close
-        </div>
+        <SetFan
+          cards={anchor.meld.cards}
+          cardW={anchor.cardW}
+          cardH={anchor.cardH}
+          cardRadius={anchor.cardRadius}
+          maxWidth={anchor.width}
+          meldType={anchor.meld.type}
+        />
       </div>
     </div>
   )

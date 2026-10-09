@@ -132,7 +132,14 @@ export async function loadActiveGame(): Promise<GameState | null> {
       ...p,
       isAI: i !== 0,
     }))
-    return { ...parsed.state, players }
+    return {
+      ...parsed.state,
+      players,
+      buyIntents: Array.isArray(parsed.state.buyIntents) ? parsed.state.buyIntents : [],
+      extendHistory: Array.isArray(parsed.state.extendHistory) ? parsed.state.extendHistory : [],
+      pendingWild: parsed.state.pendingWild ?? null,
+      roundVictorIndex: parsed.state.roundVictorIndex ?? null,
+    }
   } catch {
     return null
   }

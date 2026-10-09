@@ -118,6 +118,10 @@ describe('pair-flood readiness (round 1)', () => {
       phase: 'buy-window',
       hasDrawnThisTurn: false,
       lastDiscarderIndex: 0,
+      buyIntents: [],
+      extendHistory: [],
+      pendingWild: null,
+      roundVictorIndex: null,
       meldIdCounter: 0,
       lastError: null,
     }

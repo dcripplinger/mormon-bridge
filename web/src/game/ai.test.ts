@@ -15,8 +15,9 @@ import {
 } from './ai'
 import type { GameState, Meld, PlayerState } from './state'
 import {
-  buyDiscard,
   canBuyDiscard,
+  continueAfterRound,
+  declareBuy,
   claimDiscardAsDraw,
   createGame,
   discard,
@@ -86,6 +87,10 @@ function stubState(opts: {
     phase,
     hasDrawnThisTurn,
     lastDiscarderIndex,
+    buyIntents: [],
+    extendHistory: [],
+    pendingWild: null,
+    roundVictorIndex: null,
     meldIdCounter: tableMetlds.length,
     lastError: null,
   }
@@ -426,18 +431,15 @@ describe('smoke: all-AI game progresses', () => {
       if (state.phase === 'round-end') break
 
       if (state.phase === 'buy-window' || state.phase === 'draw') {
-        let bought = false
-        for (const p of state.players) {
-          if (decideBuy(state, p.index)) {
-            state = buyDiscard(state, p.index)
-            bought = true
-            break
+        if (state.phase === 'buy-window') {
+          for (const p of state.players) {
+            if (decideBuy(state, p.index)) {
+              state = declareBuy(state, p.index)
+            }
           }
         }
-        if (!bought) {
-          const choice = decideDraw(state)
-          state = choice === 'claim' ? claimDiscardAsDraw(state) : drawFromDeck(state)
-        }
+        const choice = decideDraw(state)
+        state = choice === 'claim' ? claimDiscardAsDraw(state) : drawFromDeck(state)
         decisions++
         continue
       }
@@ -484,6 +486,11 @@ describe('smoke: all-AI game progresses', () => {
 
     let steps = 0
     while (state.roundIndex === 0 && state.phase !== 'game-end' && steps < 800) {
+      if (state.phase === 'round-end') {
+        state = continueAfterRound(state)
+        steps++
+        continue
+      }
       const beforeRound = state.roundIndex
       const beforePhase = state.phase
       const beforePlayer = state.currentPlayerIndex

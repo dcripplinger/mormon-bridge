@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Card } from '../game/card'
 import CardView from './CardView'
+import { fanEndAtPoint } from './fan-end'
+import { ghostLiftedOrigin } from './ghost-lift'
 import { prepSlotLandingPos } from './GoDownPrep'
 
 interface HandViewProps {
@@ -35,6 +37,28 @@ interface HandViewProps {
   canDropToSlot?: (cardId: string, slotIndex: number) => boolean
   /** Called with the slot index being hovered during drag, or null when none. */
   onPrepSlotHoverChange?: (slotIndex: number | null) => void
+  /** Table sets that can receive a dragged card. */
+  meldDropZones?: Array<{
+    meldId: string
+    ref: React.RefObject<HTMLElement | null>
+    rotationDeg: number
+  }>
+  /** True when this card may legally be played onto that set. */
+  canDropToMeld?: (cardId: string, meldId: string) => boolean
+  /** Legal ends for this card on that set. Two ends means the pointer picks. */
+  meldEnds?: (cardId: string, meldId: string) => Array<'left' | 'right'>
+  onMeldHoverChange?: (meldId: string | null, side?: 'left' | 'right') => void
+  /** Release over a legal set. sourceRect is the dragged card's last box. */
+  onDropToMeld?: (
+    cardId: string,
+    meldId: string,
+    sourceRect: DOMRect,
+    side?: 'left' | 'right',
+  ) => void
+  /** Undo plays onto existing sets. Shown at the lower left of the hand. */
+  showUndo?: boolean
+  canUndo?: boolean
+  onUndo?: () => void
 }
 
 /** Fixed capacity — width only changes spacing, never row membership. */
@@ -298,6 +322,14 @@ export default function HandView({
   onDropToSlot,
   canDropToSlot,
   onPrepSlotHoverChange,
+  meldDropZones,
+  canDropToMeld,
+  onMeldHoverChange,
+  onDropToMeld,
+  meldEnds,
+  showUndo,
+  canUndo,
+  onUndo,
 }: HandViewProps) {
   const measureRef = useRef<HTMLDivElement | null>(null)
   const [cardW, setCardW] = useState(64)
@@ -309,6 +341,7 @@ export default function HandView({
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [previewCards, setPreviewCards] = useState<Card[] | null>(null)
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null)
+  const [ghostPointer, setGhostPointer] = useState<{ x: number; y: number } | null>(null)
   const [isSettling, setIsSettling] = useState(false)
   const [settlePopId, setSettlePopId] = useState<string | null>(null)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -323,6 +356,10 @@ export default function HandView({
     active: boolean
     overDiscard: boolean
     overSlotIndex: number | null
+    overMeldId: string | null
+    overMeldSide: 'left' | 'right' | null
+    cardW: number
+    cardH: number
     order: Card[]
     ghostX: number
     ghostY: number
@@ -341,7 +378,8 @@ export default function HandView({
   const maxRowOffset = Math.max(0, rowCount - ROWS_PER_PAGE)
   const safeRowOffset = Math.min(rowOffset, maxRowOffset)
   const showPager = displayCards.length > HAND_PAGE_SIZE
-  const canInteract = canSelect || canReorder || canDiscard
+  const canInteract =
+    canSelect || canReorder || canDiscard || (meldDropZones?.length ?? 0) > 0
 
   // Keep row offset in range when the hand shrinks.
   useEffect(() => {
@@ -405,6 +443,11 @@ export default function HandView({
     onDropToSlot,
     canDropToSlot,
     onPrepSlotHoverChange,
+    meldDropZones,
+    canDropToMeld,
+    onMeldHoverChange,
+    onDropToMeld,
+    meldEnds,
   })
   latestRef.current = {
     cards,
@@ -423,6 +466,11 @@ export default function HandView({
     onDropToSlot,
     canDropToSlot,
     onPrepSlotHoverChange,
+    meldDropZones,
+    canDropToMeld,
+    onMeldHoverChange,
+    onDropToMeld,
+    meldEnds,
   }
 
   useEffect(() => {
@@ -430,6 +478,7 @@ export default function HandView({
       setDraggingId(null)
       setPreviewCards(null)
       setGhostPos(null)
+      setGhostPointer(null)
       setIsSettling(false)
       if (hoverChevronTimerRef.current !== null) {
         clearTimeout(hoverChevronTimerRef.current)
@@ -574,7 +623,13 @@ export default function HandView({
           const r = slotEl.getBoundingClientRect()
           sideHint = drag.ghostX + drag.offsetX < r.left + r.width / 2 ? 'left' : 'right'
         }
-        beginSlotDropSettle(cardId, drag.ghostX, drag.ghostY, wasOverSlotIndex, sideHint)
+        const lifted = ghostLiftedOrigin(
+          drag.ghostX + drag.offsetX,
+          drag.ghostY + drag.offsetY,
+          window.innerWidth,
+          window.innerHeight,
+        )
+        beginSlotDropSettle(cardId, lifted.x, lifted.y, wasOverSlotIndex, sideHint)
         return
       }
 
@@ -584,7 +639,13 @@ export default function HandView({
         return
       }
       if (commit === 'reorder' && L.canReorder && order) {
-        beginReorderSettle(cardId, order, drag.ghostX, drag.ghostY)
+        const lifted = ghostLiftedOrigin(
+          drag.ghostX + drag.offsetX,
+          drag.ghostY + drag.offsetY,
+          window.innerWidth,
+          window.innerHeight,
+        )
+        beginReorderSettle(cardId, order, lifted.x, lifted.y)
         return
       }
       clearLift()
@@ -603,7 +664,8 @@ export default function HandView({
       if (!drag.active) {
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
         const hasPrepTarget = (L.prepSlotRefs?.length ?? 0) > 0 && !!L.onDropToSlot
-        if (!L.canReorder && !L.canDiscard && !hasPrepTarget) return
+        const hasMeldTarget = (L.meldDropZones?.length ?? 0) > 0 && !!L.onDropToMeld
+        if (!L.canReorder && !L.canDiscard && !hasPrepTarget && !hasMeldTarget) return
         drag.active = true
         setDraggingId(drag.cardId)
         setPreviewCards(drag.order)
@@ -614,6 +676,7 @@ export default function HandView({
       drag.ghostX = gx
       drag.ghostY = gy
       setGhostPos({ x: gx, y: gy })
+      setGhostPointer({ x: e.clientX, y: e.clientY })
 
       let overDiscard = false
       if (L.canDiscard && L.discardZoneRef?.current) {
@@ -648,7 +711,32 @@ export default function HandView({
         }
       }
 
-      if (!overDiscard && L.canReorder) {
+      let overMeldId: string | null = null
+      let overMeldSide: 'left' | 'right' | null = null
+      if (L.meldDropZones && L.onDropToMeld) {
+        for (const zone of L.meldDropZones) {
+          const el = zone.ref.current
+          if (!el) continue
+          const rect = el.getBoundingClientRect()
+          if (!pointInRect(e.clientX, e.clientY, rect)) continue
+          const allowed = L.canDropToMeld ? L.canDropToMeld(drag.cardId, zone.meldId) : false
+          if (allowed) {
+            overMeldId = zone.meldId
+            const ends = L.meldEnds?.(drag.cardId, zone.meldId) ?? ['right']
+            overMeldSide = ends.length > 1
+              ? fanEndAtPoint(e.clientX, e.clientY, rect, zone.rotationDeg)
+              : (ends[0] ?? 'right')
+            break
+          }
+        }
+      }
+      if (overMeldId !== drag.overMeldId || overMeldSide !== drag.overMeldSide) {
+        drag.overMeldId = overMeldId
+        drag.overMeldSide = overMeldSide
+        L.onMeldHoverChange?.(overMeldId, overMeldSide ?? undefined)
+      }
+
+      if (!overDiscard && !overMeldId && L.canReorder) {
         const containerEl = measureRef.current
         const insertAt = containerEl
           ? insertIndexAtPoint(e.clientX, e.clientY, drag.order, drag.cardId, containerEl)
@@ -693,6 +781,22 @@ export default function HandView({
         finish('click')
         return
       }
+      if (drag.overMeldId && L.onDropToMeld) {
+        const meldId = drag.overMeldId
+        const cardId = drag.cardId
+        const lifted = ghostLiftedOrigin(
+          e.clientX,
+          e.clientY,
+          window.innerWidth,
+          window.innerHeight,
+        )
+        const rect = new DOMRect(lifted.x, lifted.y, drag.cardW, drag.cardH)
+        drag.overSlotIndex = null
+        finish('cancel')
+        L.onMeldHoverChange?.(null)
+        L.onDropToMeld(cardId, meldId, rect, drag.overMeldSide ?? undefined)
+        return
+      }
       if (drag.overDiscard && L.canDiscard) {
         finish('discard')
         return
@@ -734,6 +838,10 @@ export default function HandView({
       active: false,
       overDiscard: false,
       overSlotIndex: null,
+      overMeldId: null,
+      overMeldSide: null,
+      cardW: rect.width,
+      cardH: rect.height,
       order: [...(previewCards ?? cards)],
       ghostX: rect.left,
       ghostY: rect.top,
@@ -885,6 +993,50 @@ export default function HandView({
           </div>
         </div>
 
+        {showUndo && (
+          <button
+            type="button"
+            aria-label="Undo last play"
+            disabled={!canUndo}
+            onClick={onUndo}
+            style={{
+              position: 'absolute',
+              left: -10,
+              top: '50%',
+              marginTop: 12,
+              width: 22,
+              height: 22,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+              border: '1px solid var(--border)',
+              borderRadius: '50%',
+              opacity: canUndo ? 1 : 0.4,
+              cursor: canUndo ? 'pointer' : 'default',
+              padding: 0,
+              zIndex: 5,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M6.5 3.5 L3 6.5 L6.5 9.5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M3.5 6.5 H9.2 a3.2 3.2 0 0 1 0 6.4 H7"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        )}
+
         {/* Side pager — floats at the right edge. Each button fills half the
             container so the entire half is clickable/hoverable; the visible
             circle is an inner <span> centered inside that hit area. */}
@@ -990,13 +1142,28 @@ export default function HandView({
         )}
       </div>
 
-      {/* Drag ghost — follows the pointer; settles into the slot on release */}
+      {/* Drag ghost — lifted above the pointer; settles into the slot on release */}
       {draggedCard && ghostPos && (
         <div
+          data-drag-ghost
           style={{
             position: 'fixed',
-            left: ghostPos.x,
-            top: ghostPos.y,
+            left: isSettling || !ghostPointer
+              ? ghostPos.x
+              : ghostLiftedOrigin(
+                  ghostPointer.x,
+                  ghostPointer.y,
+                  window.innerWidth,
+                  window.innerHeight,
+                ).x,
+            top: isSettling || !ghostPointer
+              ? ghostPos.y
+              : ghostLiftedOrigin(
+                  ghostPointer.x,
+                  ghostPointer.y,
+                  window.innerWidth,
+                  window.innerHeight,
+                ).y,
             width: 'var(--card-w)',
             height: 'var(--card-h)',
             zIndex: 1000,

@@ -91,6 +91,7 @@ function App() {
         onReturnToMenu={handleReturnToMenu}
         onSave={handleSave}
         onGameEnd={handleGameEnd}
+        settings={initialSettings ?? undefined}
       />
     )
   }

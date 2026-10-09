@@ -134,6 +134,13 @@ describe('placeCard groups', () => {
     expect(result?.cards).toHaveLength(2)
   })
 
+  it('puts a wild on the left of a group', () => {
+    const slot = groupSlot([c('red', 5), c('green', 5)])
+    const result = placeCard(slot, wild())
+    expect(result?.cards[0].color).toBe('wild')
+    expect(result?.cards[1].number).toBe(5)
+  })
+
   it('returns null for invalid placement', () => {
     const slot = groupSlot([c('red', 5)])
     expect(placeCard(slot, c('red', 6))).toBeNull()

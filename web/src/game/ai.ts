@@ -13,15 +13,23 @@ import {
   isValidRun,
   scoreCard,
 } from './rules'
+import {
+  DEFAULT_WILD_RULES,
+  allowsWildDisplacement,
+  planMeldPlay,
+  wildDestinations,
+  type WildRules,
+} from './meld-play'
 import type { GameState, Meld } from './state'
 import {
-  buyDiscard,
   canBuyDiscard,
   claimDiscardAsDraw,
+  declareBuy,
   discard,
   drawFromDeck,
   extendMeld,
   goDown,
+  keepPendingWild,
   topDiscard,
 } from './state'
 
@@ -34,7 +42,8 @@ export type Rng = () => number
 
 export type PlayStep =
   | { type: 'goDown'; melds: string[][] }
-  | { type: 'extend'; meldId: string; cardId: string }
+  | { type: 'extend'; meldId: string; cardId: string; side?: 'left' | 'right' }
+  | { type: 'keep-wild' }
   | { type: 'discard'; cardId: string }
 
 export interface PlayPlan {
@@ -504,8 +513,9 @@ export function pickDiscardCard(
 export function planExtensions(
   hand: Card[],
   tableMelds: Meld[],
-): { type: 'extend'; meldId: string; cardId: string }[] {
-  const steps: { type: 'extend'; meldId: string; cardId: string }[] = []
+  rules: WildRules = DEFAULT_WILD_RULES,
+): { type: 'extend'; meldId: string; cardId: string; side?: 'left' | 'right' }[] {
+  const steps: { type: 'extend'; meldId: string; cardId: string; side?: 'left' | 'right' }[] = []
   let remaining = [...hand]
   let melds: Meld[] = tableMelds.map((m) => ({
     ...m,
@@ -517,13 +527,41 @@ export function planExtensions(
     progressed = false
     outer: for (const card of remaining) {
       for (const meld of melds) {
-        if (canExtendMeld(meld.cards, card, meld.type)) {
-          steps.push({ type: 'extend', meldId: meld.id, cardId: card.id })
-          meld.cards = [...meld.cards, card]
-          remaining = remaining.filter((c) => c.id !== card.id)
-          progressed = true
-          break outer
+        const allowDisplace = allowsWildDisplacement(rules, meld.type)
+        const plan = planMeldPlay(meld.cards, meld.type, card, undefined, allowDisplace)
+        if (!plan) continue
+        if (plan.displacedWild) {
+          const nextMelds = melds.map((m) =>
+            m.id === meld.id ? { ...m, cards: plan.cards } : m,
+          )
+          const home = wildDestinations(nextMelds, plan.displacedWild, rules, meld.id)[0]
+          const handOk = rules.to === 'any-meld-or-hand'
+          if (!home && !handOk) continue
         }
+        steps.push({ type: 'extend', meldId: meld.id, cardId: card.id, side: plan.side })
+        meld.cards = plan.cards
+        remaining = remaining.filter((c) => c.id !== card.id)
+        if (plan.displacedWild) {
+          const nextMelds = melds.map((m) => ({ ...m, cards: [...m.cards] }))
+          const home = wildDestinations(nextMelds, plan.displacedWild, rules, meld.id)[0]
+          if (home) {
+            const dest = melds.find((m) => m.id === home.meldId)
+            if (dest) {
+              const placed = planMeldPlay(dest.cards, dest.type, plan.displacedWild, home.side, false)
+              if (placed) {
+                steps.push({
+                  type: 'extend',
+                  meldId: home.meldId,
+                  cardId: plan.displacedWild.id,
+                  side: home.side,
+                })
+                dest.cards = placed.cards
+              }
+            }
+          }
+        }
+        progressed = true
+        break outer
       }
     }
   }
@@ -534,7 +572,32 @@ export function planExtensions(
 // Public decisions
 // ---------------------------------------------------------------------------
 
-export function decidePlay(state: GameState, rng: Rng = Math.random): PlayPlan {
+export function decidePlay(
+  state: GameState,
+  rng: Rng = Math.random,
+  rules: WildRules = DEFAULT_WILD_RULES,
+): PlayPlan {
+  if (state.pendingWild) {
+    const home = wildDestinations(
+      state.tableMetlds,
+      state.pendingWild,
+      rules,
+      state.extendHistory[state.extendHistory.length - 1]?.meldId ?? '',
+    )[0]
+    if (home) {
+      return {
+        steps: [{
+          type: 'extend',
+          meldId: home.meldId,
+          cardId: state.pendingWild.id,
+          side: home.side,
+        }],
+      }
+    }
+    if (rules.to === 'any-meld-or-hand') return { steps: [{ type: 'keep-wild' }] }
+    return { steps: [] }
+  }
+
   const player = state.players[state.currentPlayerIndex]
   const label = `${player.displayName}#${player.index}`
   const steps: PlayStep[] = []
@@ -596,10 +659,11 @@ export function decidePlay(state: GameState, rng: Rng = Math.random): PlayPlan {
   }
 
   if (hasGoneDown && hand.length > 0) {
-    const ext = planExtensions(hand, tableMelds)
+    const ext = planExtensions(hand, tableMelds, rules)
     for (const step of ext) {
       steps.push(step)
-      const card = hand.find((c) => c.id === step.cardId)!
+      const card = hand.find((c) => c.id === step.cardId)
+      if (!card) continue
       const handBefore = hand
       hand = hand.filter((c) => c.id !== step.cardId)
       const meld = tableMelds.find((m) => m.id === step.meldId)!
@@ -894,24 +958,25 @@ export function sampleThinkDelayMs(rng: Rng = Math.random): number {
 
 /**
  * Applies one AI decision burst for the current situation:
- * - buy-window: first eligible AI buyer, else current AI claim/draw
+ * - buy-window: every willing AI calls buy, then the current AI claims or draws
  * - play-or-discard: full decidePlay plan (go down, extends, discard)
  */
 export function runAIStep(state: GameState): GameState {
   if (state.phase === 'buy-window') {
-    for (const p of state.players) {
+    let s = state
+    for (const p of s.players) {
       if (!p.isAI) continue
-      if (decideBuy(state, p.index)) {
-        return buyDiscard(state, p.index)
+      if (decideBuy(s, p.index)) {
+        s = declareBuy(s, p.index)
       }
     }
-    const current = state.players[state.currentPlayerIndex]
+    const current = s.players[s.currentPlayerIndex]
     if (current.isAI) {
-      return decideDraw(state) === 'claim'
-        ? claimDiscardAsDraw(state)
-        : drawFromDeck(state)
+      return decideDraw(s) === 'claim'
+        ? claimDiscardAsDraw(s)
+        : drawFromDeck(s)
     }
-    return state
+    return s
   }
 
   if (state.phase === 'draw') {
@@ -928,7 +993,8 @@ export function runAIStep(state: GameState): GameState {
     for (const step of plan.steps) {
       if (s.phase !== 'play-or-discard') break
       if (step.type === 'goDown') s = goDown(s, step.melds)
-      else if (step.type === 'extend') s = extendMeld(s, step.meldId, step.cardId)
+      else if (step.type === 'extend') s = extendMeld(s, step.meldId, step.cardId, step.side)
+      else if (step.type === 'keep-wild') s = keepPendingWild(s)
       else if (step.type === 'discard') s = discard(s, step.cardId)
       if (s.lastError) break
     }

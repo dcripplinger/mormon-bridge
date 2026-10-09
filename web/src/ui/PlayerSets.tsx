@@ -1,3 +1,4 @@
+import type { RefObject } from 'react'
 import type { Meld } from '../game/state'
 import SetFan from './SetFan'
 
@@ -25,8 +26,14 @@ interface PlayerSetsProps {
    * Renders a gold outline on that fan.
    */
   targetMeldId?: string | null
-  /** Called when a fan is tapped — either zoom or extend depending on context. */
+  /** Called when a fan is tapped (zoom). */
   onTap: (meldId: string) => void
+  /** Landing target for a card flying onto this meld. */
+  fanRefFor?: (meldId: string) => RefObject<HTMLDivElement | null>
+  /** End of the hovered fan the dragged card would join. */
+  activeEnd?: 'left' | 'right' | null
+  hiddenCardId?: string | null
+  cardRefFor?: (cardId: string) => RefObject<HTMLDivElement | null>
 }
 
 export default function PlayerSets({
@@ -38,6 +45,10 @@ export default function PlayerSets({
   maxFanWidth,
   targetMeldId,
   onTap,
+  fanRefFor,
+  activeEnd,
+  hiddenCardId,
+  cardRefFor,
 }: PlayerSetsProps) {
   if (melds.length === 0) return null
 
@@ -48,18 +59,24 @@ export default function PlayerSets({
         flexDirection: direction,
         gap: 6,
         alignItems: direction === 'row' ? 'flex-end' : 'flex-start',
+        pointerEvents: 'auto',
       }}
     >
       {melds.map((meld) => (
         <SetFan
           key={meld.id}
+          ref={fanRefFor?.(meld.id)}
           cards={meld.cards}
           cardW={cardW}
           cardH={cardH}
           cardRadius={cardRadius}
           maxWidth={maxFanWidth}
           meldType={meld.type}
+          meldId={meld.id}
           selected={targetMeldId === meld.id}
+          activeEnd={targetMeldId === meld.id ? activeEnd : null}
+          hiddenCardId={hiddenCardId}
+          cardRefFor={cardRefFor}
           onTap={() => onTap(meld.id)}
         />
       ))}

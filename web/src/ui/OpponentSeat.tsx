@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import type { Card } from '../game/card'
 import AvatarView from './AvatarView'
 import CardView from './CardView'
@@ -39,6 +39,7 @@ interface OpponentSeatProps {
   cardCount: number
   isCurrent: boolean
   handAnchorRef?: React.RefObject<HTMLDivElement | null>
+  onRevealName?: () => void
 }
 
 export default function OpponentSeat({
@@ -48,6 +49,7 @@ export default function OpponentSeat({
   cardCount,
   isCurrent,
   handAnchorRef,
+  onRevealName,
 }: OpponentSeatProps) {
   const { side, sideCount } = placement
   const viewport = useViewportSize()
@@ -55,23 +57,6 @@ export default function OpponentSeat({
   const cardW = CARD_W * scale
   const cardH = CARD_H * scale
   const count = Math.max(0, cardCount)
-  const [nameVisible, setNameVisible] = useState(false)
-  const nameHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (nameHideTimerRef.current !== null) clearTimeout(nameHideTimerRef.current)
-    }
-  }, [])
-
-  const revealName = () => {
-    setNameVisible(true)
-    if (nameHideTimerRef.current !== null) clearTimeout(nameHideTimerRef.current)
-    nameHideTimerRef.current = setTimeout(() => {
-      setNameVisible(false)
-      nameHideTimerRef.current = null
-    }, 2000)
-  }
 
   const maxFan = maxFanAlongEdge(side, sideCount, viewport.w, viewport.h, cardW)
   // Max step = loosest spacing (current look with few cards). Extra cards only tighten.
@@ -121,6 +106,7 @@ export default function OpponentSeat({
       }}
     >
       <div
+        data-avatar-anchor={placement.playerIndex}
         style={{
           position: 'relative',
           flexShrink: 0,
@@ -131,7 +117,7 @@ export default function OpponentSeat({
         <button
           type="button"
           aria-label={displayName}
-          onClick={revealName}
+          onClick={onRevealName}
           style={{
             background: 'transparent',
             border: 'none',
@@ -152,42 +138,6 @@ export default function OpponentSeat({
             active={isCurrent}
           />
         </button>
-        {nameVisible && (
-          <div
-            style={{
-              position: 'absolute',
-              ...(side === 'top'
-                ? {
-                    top: '100%',
-                    left: '50%',
-                    marginTop: '6px',
-                    transform: 'translateX(-50%)',
-                  }
-                : side === 'right'
-                  ? {
-                      top: '50%',
-                      right: '100%',
-                      marginRight: '6px',
-                      transform: 'translateY(-50%)',
-                    }
-                  : {
-                      top: '50%',
-                      left: '100%',
-                      marginLeft: '6px',
-                      transform: 'translateY(-50%)',
-                    }),
-              fontSize: sideCount > 1 ? '0.75rem' : '0.85rem',
-              fontWeight: isCurrent ? 700 : 500,
-              color: isCurrent ? 'var(--accent)' : 'var(--text)',
-              textShadow: '0 1px 3px rgba(0,0,0,0.75)',
-              whiteSpace: 'nowrap',
-              pointerEvents: 'none',
-              lineHeight: 1.2,
-            }}
-          >
-            {displayName}
-          </div>
-        )}
       </div>
 
       {/* Outer box uses post-rotation bounds so flex/hang math stay axis-aligned. */}

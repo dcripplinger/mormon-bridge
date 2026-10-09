@@ -1,5 +1,6 @@
 import type { Card } from './card'
 import { isWild } from './card'
+import { groupWildsOnLeft } from './meld-play'
 import { ROUND_REQUIREMENTS, isValidGroup, isValidRun } from './rules'
 
 // ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ function canPlaceInRun(slot: PrepSlot, card: Card): boolean {
  * Returns an updated PrepSlot, or null if placement is not valid.
  *
  * For run slots, sideHint breaks ties when both ends are valid (default right).
- * For group slots, sideHint is ignored (cards are always appended).
+ * For group slots, sideHint is ignored. Wilds are kept on the left.
  */
 export function placeCard(
   slot: PrepSlot,
@@ -141,7 +142,7 @@ export function placeCard(
 ): PrepSlot | null {
   if (slot.type === 'group') {
     if (!canPlaceInGroup(slot, card)) return null
-    return { ...slot, cards: [...slot.cards, card] }
+    return { ...slot, cards: groupWildsOnLeft([...slot.cards, card]) }
   }
   return placeInRun(slot, card, sideHint)
 }
