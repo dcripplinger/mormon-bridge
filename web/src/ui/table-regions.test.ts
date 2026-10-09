@@ -67,6 +67,57 @@ describe('computeTableRegions', () => {
       expect(rectsOverlap(region.rect, layout.pileRect)).toBe(false)
     }
   })
+
+  it('lets portrait side sets run past the piles, with corners on top and bottom', () => {
+    const seats = placeOpponents(4, 0, true)
+    const layout = computeTableRegions(390, 844, 0, seats)
+    const left = layout.regions.find((r) => r.side === 'left')
+    const right = layout.regions.find((r) => r.side === 'right')
+    const top = layout.regions.find((r) => r.side === 'top')
+    const bottom = layout.regions.find((r) => r.side === 'bottom')
+    expect(left && right && top && bottom).toBeTruthy()
+    if (!left || !right || !top || !bottom) return
+
+    expect(left.rect.height).toBeGreaterThan(layout.pileRect.height * 2)
+    expect(left.rect.top).toBeLessThan(layout.pileRect.top)
+    expect(left.rect.top + left.rect.height).toBeGreaterThan(layout.pileRect.top + layout.pileRect.height)
+    expect(top.rect.left).toBeLessThan(layout.pileRect.left)
+    expect(top.rect.left + top.rect.width).toBeGreaterThan(layout.pileRect.left + layout.pileRect.width)
+    expect(top.rect.left).toBe(bottom.rect.left)
+    expect(top.rect.width).toBe(bottom.rect.width)
+    expect(rectsOverlap(left.rect, top.rect)).toBe(false)
+    expect(rectsOverlap(left.rect, bottom.rect)).toBe(false)
+    expect(rectsOverlap(left.rect, right.rect)).toBe(false)
+  })
+
+  it('gives landscape corners to the side seats and lets top extend past the piles', () => {
+    const seats = placeOpponents(4, 0, false)
+    const layout = computeTableRegions(1280, 800, 0, seats)
+    const left = layout.regions.find((r) => r.side === 'left')
+    const top = layout.regions.find((r) => r.side === 'top')
+    const bottom = layout.regions.find((r) => r.side === 'bottom')
+    expect(left && top && bottom).toBeTruthy()
+    if (!left || !top || !bottom) return
+
+    expect(left.rect.top).toBeLessThanOrEqual(top.rect.top)
+    expect(left.rect.height).toBeGreaterThan(layout.pileRect.height)
+    expect(left.rect.left + left.rect.width).toBeLessThanOrEqual(top.rect.left)
+    expect(top.rect.width).toBeGreaterThan(layout.pileRect.width)
+    expect(top.rect.left).toBeLessThan(layout.pileRect.left)
+    expect(rectsOverlap(left.rect, top.rect)).toBe(false)
+    expect(rectsOverlap(left.rect, bottom.rect)).toBe(false)
+  })
+
+  it('splits two portrait side seats evenly along the middle ring', () => {
+    const seats = placeOpponents(5, 0, true)
+    const layout = computeTableRegions(390, 844, 0, seats)
+    const lefts = layout.regions.filter((r) => r.side === 'left')
+    expect(lefts).toHaveLength(2)
+    expect(Math.abs(lefts[0].rect.height - lefts[1].rect.height)).toBeLessThan(2)
+    expect(rectsOverlap(lefts[0].rect, lefts[1].rect)).toBe(false)
+    const upper = lefts[0].rect.top < lefts[1].rect.top ? lefts[0] : lefts[1]
+    expect(upper.rect.top).toBeLessThan(layout.pileRect.top)
+  })
 })
 
 describe('orientedPocketLayout', () => {

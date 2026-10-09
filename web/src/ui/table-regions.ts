@@ -6,6 +6,11 @@ const FULL_CARD_H = 96
 const REGION_GAP = 12
 /** How far opponent hands reach in from the screen edge. */
 const HAND_CLEAR = 56
+/**
+ * Depth of the corner strip reserved for the players on the shorter screen edges.
+ * One row of set cards, plus a little room so the fan pad stays inside the strip.
+ */
+const CORNER_ROW_PAD = 8
 const PILE_LAYOUT_W = 64 * 2 + 28
 const PILE_LAYOUT_H = 96 + 10 + 38
 
@@ -158,6 +163,46 @@ function splitAlong(
   })
 }
 
+function fitsFan(
+  rect: TableRect,
+  along: 'x' | 'y',
+  setCardW: number,
+  setCardH: number,
+): boolean {
+  const alongSize = along === 'x' ? rect.width : rect.height
+  const crossSize = along === 'x' ? rect.height : rect.width
+  return alongSize >= setCardW && crossSize >= setCardH
+}
+
+/**
+ * Players on one edge share that edge's set area.
+ * `along` is the axis their fans spread on.
+ */
+function pushEdgeSlices(
+  regions: SetRegion[],
+  seats: OpponentSeatPlacement[],
+  band: TableRect,
+  along: 'x' | 'y',
+  side: SetSide,
+  setCardW: number,
+  setCardH: number,
+): boolean {
+  if (seats.length === 0) return true
+  if (!fitsFan(band, along, setCardW, setCardH)) return false
+  const slices = splitAlong(band, seats.length, along)
+  for (let i = 0; i < seats.length; i++) {
+    const slice = slices[i]
+    if (!fitsFan(slice, along, setCardW, setCardH)) return false
+    regions.push({
+      playerIndex: seats[i].playerIndex,
+      side,
+      rect: slice,
+      rotationDeg: rotationForSide(side),
+    })
+  }
+  return true
+}
+
 function tryLayout(
   w: number,
   h: number,
@@ -190,79 +235,142 @@ function tryLayout(
 
   const regions: SetRegion[] = []
 
-  const topSeats = seats.filter((s) => s.side === 'top')
-  let topRect: TableRect | null = null
-  if (topSeats.length > 0) {
-    topRect = {
-      left: fieldLeft,
-      top: fieldTop,
-      width: fieldRight - fieldLeft,
-      height: pileRect.top - REGION_GAP - fieldTop,
-    }
-    if (topRect.height < setCardH || topRect.width < setCardW) return null
-    const slices = splitAlong(topRect, topSeats.length, 'x')
-    topSeats.forEach((seat, i) => {
-      regions.push({
-        playerIndex: seat.playerIndex,
-        side: 'top',
-        rect: slices[i],
-        rotationDeg: rotationForSide('top'),
-      })
-    })
-  }
-
-  const humanRect: TableRect = {
+  // Middle ring: felt between the outer hand clearance and the pile (plus gap).
+  // Player areas partition that ring. They are not a grid locked to the pile edges.
+  // Corners belong to whoever sits on the shorter screen edges — top and bottom in
+  // portrait, left and right in landscape — as a full-length strip one set-row deep.
+  // The other seats fill the remaining length of their side, so a portrait side seat
+  // runs past the pile instead of stopping at its top and bottom.
+  const outer: TableRect = {
     left: fieldLeft,
-    top: pileRect.top + pileRect.height + REGION_GAP,
+    top: fieldTop,
     width: fieldRight - fieldLeft,
-    height: fieldBottom - (pileRect.top + pileRect.height + REGION_GAP),
+    height: fieldBottom - fieldTop,
   }
-  if (humanRect.height < setCardH || humanRect.width < setCardW) return null
-  if (humanIndex >= 0) {
-    regions.push({
-      playerIndex: humanIndex,
-      side: 'bottom',
-      rect: humanRect,
-      rotationDeg: rotationForSide('bottom'),
-    })
+  const hole: TableRect = {
+    left: pileRect.left - REGION_GAP,
+    top: pileRect.top - REGION_GAP,
+    width: pileRect.width + REGION_GAP * 2,
+    height: pileRect.height + REGION_GAP * 2,
   }
-
-  const sideTop = topRect ? topRect.top + topRect.height + REGION_GAP : fieldTop
-  const sideBottom = humanRect.top - REGION_GAP
-  const sideHeight = sideBottom - sideTop
-  const leftWidth = pileRect.left - REGION_GAP - fieldLeft
-  const rightWidth = fieldRight - (pileRect.left + pileRect.width + REGION_GAP)
-  if (sideHeight < setCardW || leftWidth < setCardH || rightWidth < setCardH) return null
-
-  const leftRect: TableRect = {
-    left: fieldLeft,
-    top: sideTop,
-    width: leftWidth,
-    height: sideHeight,
-  }
-  const rightRect: TableRect = {
-    left: pileRect.left + pileRect.width + REGION_GAP,
-    top: sideTop,
-    width: rightWidth,
-    height: sideHeight,
+  if (
+    hole.left < outer.left ||
+    hole.top < outer.top ||
+    hole.left + hole.width > outer.left + outer.width ||
+    hole.top + hole.height > outer.top + outer.height
+  ) {
+    return null
   }
 
-  for (const side of ['left', 'right'] as const) {
-    const group = seats.filter((s) => s.side === side)
-    if (group.length === 0) continue
-    const band = side === 'left' ? leftRect : rightRect
-    const slices = splitAlong(band, group.length, 'y')
-    group.forEach((seat, i) => {
-      const slice = slices[i]
-      if (slice.height < setCardW || slice.width < setCardH) return
+  const cornerDepth = setCardH + CORNER_ROW_PAD
+  const claimedDepth = (gutter: number, claimed: boolean) =>
+    claimed ? Math.min(gutter, cornerDepth) : 0
+
+  const topSeats = seats.filter((s) => s.side === 'top')
+  const leftSeats = seats.filter((s) => s.side === 'left')
+  const rightSeats = seats.filter((s) => s.side === 'right')
+  const cornersOnHorizontalEdges = w <= h
+
+  if (cornersOnHorizontalEdges) {
+    const topGutter = hole.top - outer.top
+    const bottomGutter = outer.top + outer.height - (hole.top + hole.height)
+    const topDepth = claimedDepth(topGutter, topSeats.length > 0)
+    const bottomDepth = claimedDepth(bottomGutter, humanIndex >= 0)
+    if (topSeats.length > 0 && topDepth < setCardH) return null
+    if (humanIndex >= 0 && bottomDepth < setCardH) return null
+
+    if (topSeats.length > 0) {
+      const topBand: TableRect = {
+        left: outer.left,
+        top: outer.top,
+        width: outer.width,
+        height: topDepth,
+      }
+      if (!pushEdgeSlices(regions, topSeats, topBand, 'x', 'top', setCardW, setCardH)) return null
+    }
+
+    if (humanIndex >= 0) {
+      const bottomBand: TableRect = {
+        left: outer.left,
+        top: outer.top + outer.height - bottomDepth,
+        width: outer.width,
+        height: bottomDepth,
+      }
+      if (!fitsFan(bottomBand, 'x', setCardW, setCardH)) return null
       regions.push({
-        playerIndex: seat.playerIndex,
-        side,
-        rect: slice,
-        rotationDeg: rotationForSide(side),
+        playerIndex: humanIndex,
+        side: 'bottom',
+        rect: bottomBand,
+        rotationDeg: rotationForSide('bottom'),
       })
-    })
-    if (group.some((_, i) => slices[i].height < setCardW)) return null
+    }
+
+    const sideBandTop = outer.top + topDepth
+    const sideBandHeight = outer.height - topDepth - bottomDepth
+    const leftBand: TableRect = {
+      left: outer.left,
+      top: sideBandTop,
+      width: hole.left - outer.left,
+      height: sideBandHeight,
+    }
+    const rightBand: TableRect = {
+      left: hole.left + hole.width,
+      top: sideBandTop,
+      width: outer.left + outer.width - (hole.left + hole.width),
+      height: sideBandHeight,
+    }
+    if (!pushEdgeSlices(regions, leftSeats, leftBand, 'y', 'left', setCardW, setCardH)) return null
+    if (!pushEdgeSlices(regions, rightSeats, rightBand, 'y', 'right', setCardW, setCardH)) return null
+  } else {
+    const leftGutter = hole.left - outer.left
+    const rightGutter = outer.left + outer.width - (hole.left + hole.width)
+    const leftDepth = claimedDepth(leftGutter, leftSeats.length > 0)
+    const rightDepth = claimedDepth(rightGutter, rightSeats.length > 0)
+    if (leftSeats.length > 0 && leftDepth < setCardH) return null
+    if (rightSeats.length > 0 && rightDepth < setCardH) return null
+
+    const leftBand: TableRect = {
+      left: outer.left,
+      top: outer.top,
+      width: leftDepth,
+      height: outer.height,
+    }
+    const rightBand: TableRect = {
+      left: outer.left + outer.width - rightDepth,
+      top: outer.top,
+      width: rightDepth,
+      height: outer.height,
+    }
+    if (!pushEdgeSlices(regions, leftSeats, leftBand, 'y', 'left', setCardW, setCardH)) return null
+    if (!pushEdgeSlices(regions, rightSeats, rightBand, 'y', 'right', setCardW, setCardH)) return null
+
+    const edgeLeft = outer.left + leftDepth
+    const edgeWidth = outer.width - leftDepth - rightDepth
+    if (topSeats.length > 0) {
+      const topBand: TableRect = {
+        left: edgeLeft,
+        top: outer.top,
+        width: edgeWidth,
+        height: hole.top - outer.top,
+      }
+      if (!pushEdgeSlices(regions, topSeats, topBand, 'x', 'top', setCardW, setCardH)) return null
+    }
+    if (humanIndex >= 0) {
+      const bottomGutter = outer.top + outer.height - (hole.top + hole.height)
+      const bottomBand: TableRect = {
+        left: edgeLeft,
+        top: hole.top + hole.height,
+        width: edgeWidth,
+        height: bottomGutter,
+      }
+      if (!fitsFan(bottomBand, 'x', setCardW, setCardH)) return null
+      regions.push({
+        playerIndex: humanIndex,
+        side: 'bottom',
+        rect: bottomBand,
+        rotationDeg: rotationForSide('bottom'),
+      })
+    }
   }
 
   for (const region of regions) {
