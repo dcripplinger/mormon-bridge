@@ -145,8 +145,12 @@ interface FlightItem {
   targetPoint?: { x: number; y: number } | null
   endRotationDeg?: number
   endScale?: number
+  startRotationDeg?: number
+  startScale?: number
   /** Hide this card in its set until the flight arrives. */
   concealCardId?: string
+  /** Hide the wild resting over the deck until the flight arrives. */
+  concealPendingWild?: boolean
 }
 
 /** Share of a set region each fan may use, and the upright row width that results. */
@@ -188,7 +192,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     }
   }, [state])
 
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [hoveredMeldId, setHoveredMeldId] = useState<string | null>(null)
   const [hoveredMeldSide, setHoveredMeldSide] = useState<MeldEnd | null>(null)
   const [scoresOpen, setScoresOpen] = useState(false)
@@ -219,6 +222,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const deckWrapRef = useRef<HTMLDivElement | null>(null)
   const discardWrapRef = useRef<HTMLDivElement | null>(null)
   const endSlotRef = useRef<HTMLDivElement | null>(null)
+  const wildHoldRef = useRef<HTMLDivElement | null>(null)
   const handAnchorRefs = useMemo(
     () =>
       Array.from({ length: initialState.players.length }, () => ({
@@ -694,15 +698,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     }
   }, [state, currentPlayer, animBusy, humanPlayerIndex, handAnchorRefs, enqueueFlight, rules, beginExtendFlight])
 
-  const toggleCard = useCallback((id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
-
   const handleDrawDeck = useCallback((sourceRect?: DOMRect) => {
     pushDrawFlights(state, sourceRect)
   }, [pushDrawFlights, state])
@@ -754,6 +749,83 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     )
   }, [beginExtendFlight, humanPlayerIndex, state.currentPlayerIndex, state.pendingWild, state.phase, state.players])
 
+  const handleUndo = useCallback(() => {
+    const s = stateRef.current
+    const rec = s.extendHistory[s.extendHistory.length - 1]
+    if (!rec || s.phase !== 'play-or-discard') return
+    const player = s.players[s.currentPlayerIndex]
+    const scale = layout.setCardW / 64
+    const fallback = new DOMRect(
+      window.innerWidth / 2 - 32,
+      window.innerHeight / 2 - 48,
+      64,
+      96,
+    )
+
+    if (rec.meldId == null) {
+      const card = player?.hand.find((c) => c.id === rec.playedCardId)
+      const el = document.querySelector<HTMLElement>(
+        `[data-hand-card][data-card-id="${CSS.escape(rec.playedCardId)}"]`,
+      )
+      dispatch({ type: 'UNDO_EXTEND' })
+      if (!card) return
+      enqueueFlight({
+        card,
+        sourceRect: el?.getBoundingClientRect() ?? fallback,
+        targetRef: wildHoldRef,
+        faceDown: false,
+        viaCenter: false,
+        endScale: 1,
+        concealPendingWild: true,
+      })
+      return
+    }
+
+    const meld = s.tableMetlds.find((m) => m.id === rec.meldId)
+    const played = meld?.cards.find((c) => c.id === rec.playedCardId)
+    if (!meld || !played) {
+      dispatch({ type: 'UNDO_EXTEND' })
+      return
+    }
+    const rotation = rotationForMeld(rec.meldId)
+    const sourceEl = cardRefFor(played.id).current
+    const sourceRect = sourceEl?.getBoundingClientRect() ?? fallback
+    const wild =
+      rec.displacedWildId && s.pendingWild?.id === rec.displacedWildId
+        ? s.pendingWild
+        : null
+    const wildEl = wild ? document.querySelector<HTMLElement>('[data-wild-hold]') : null
+    const wildRect = wildEl?.getBoundingClientRect() ?? null
+
+    dispatch({ type: 'UNDO_EXTEND' })
+
+    enqueueFlight({
+      card: played,
+      sourceRect,
+      targetRef: rec.fromPendingWild ? wildHoldRef : endSlotRef,
+      faceDown: false,
+      viaCenter: false,
+      startRotationDeg: rotation,
+      startScale: scale,
+      endRotationDeg: 0,
+      endScale: 1,
+      concealPendingWild: rec.fromPendingWild,
+    })
+
+    if (wild && wildRect) {
+      enqueueFlight({
+        card: wild,
+        sourceRect: wildRect,
+        targetRef: cardRefFor(wild.id),
+        faceDown: false,
+        viaCenter: false,
+        endRotationDeg: rotation,
+        endScale: scale,
+        concealCardId: wild.id,
+      })
+    }
+  }, [enqueueFlight, layout.setCardW, rotationForMeld])
+
   const handleReorder = useCallback(
     (orderedIds: string[]) => {
       if (humanPlayerIndex === -1) return
@@ -775,12 +847,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
 
   const handleDiscardCard = useCallback((cardId: string) => {
     dispatch({ type: 'DISCARD', cardId })
-    setSelectedIds((prev) => {
-      if (!prev.has(cardId)) return prev
-      const next = new Set(prev)
-      next.delete(cardId)
-      return next
-    })
     setHoveredMeldId(null)
     setDiscardHot(false)
   }, [])
@@ -995,8 +1061,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const canDiscardDrag =
     isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen && !state.pendingWild
   const canReorderHand = humanPlayerIndex !== -1 && !animBusy
-  const canSelectCards =
-    isHumanTurn && isPlayOrDiscard && !animBusy && !prepOpen && !state.pendingWild
   const canPlayOntoSets =
     !animBusy &&
     !prepOpen &&
@@ -1172,7 +1236,9 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
                 maxFanWidth={perFan}
                 targetMeldId={hoveredMeldId}
                 activeEnd={hoveredMeldSide}
-                hiddenCardId={activeFlightItem?.concealCardId ?? null}
+                hiddenCardId={
+                  flightQueue.find((flight) => flight.concealCardId)?.concealCardId ?? null
+                }
                 cardRefFor={cardRefFor}
                 onTap={(meldId) => zoomMeld(meldId, region.rotationDeg)}
                 fanRefFor={meldRefFor}
@@ -1419,9 +1485,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         >
           <HandView
             cards={humanHandForDisplay}
-            selectedIds={selectedIds}
-            onToggle={toggleCard}
-            canSelect={canSelectCards}
             canReorder={canReorderHand}
             canDiscard={canDiscardDrag}
             discardZoneRef={discardWrapRef}
@@ -1470,9 +1533,8 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
                 : undefined
             }
             onDropToMeld={canExtend ? handleDropToMeld : undefined}
-            showUndo={canPlayOntoSets}
-            canUndo={canPlayOntoSets && state.extendHistory.length > 0}
-            onUndo={() => dispatch({ type: 'UNDO_EXTEND' })}
+            showUndo={canPlayOntoSets && state.extendHistory.length > 0}
+            onUndo={handleUndo}
           />
         </div>
 
@@ -1499,7 +1561,8 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         )}
       </div>
 
-      {state.pendingWild && canPlayOntoSets && (
+      {(state.pendingWild &&
+        (canPlayOntoSets || flightQueue.some((flight) => flight.concealPendingWild))) && (
         <WildHold
           card={state.pendingWild}
           topPct={layout.pileTopPct}
@@ -1518,6 +1581,8 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             if (!state.pendingWild) return
             handleDropToMeld(state.pendingWild.id, meldId, rect, side)
           }}
+          hidden={flightQueue.some((flight) => flight.concealPendingWild)}
+          holdRef={wildHoldRef}
           handRef={rules.to === 'any-meld-or-hand' ? handWrapRef : undefined}
           onKeep={
             rules.to === 'any-meld-or-hand'
@@ -1550,6 +1615,8 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           targetPoint={activeFlightItem.targetPoint}
           endRotationDeg={activeFlightItem.endRotationDeg}
           endScale={activeFlightItem.endScale}
+          startRotationDeg={activeFlightItem.startRotationDeg}
+          startScale={activeFlightItem.startScale}
           onComplete={handleFlightComplete}
         />
       )}

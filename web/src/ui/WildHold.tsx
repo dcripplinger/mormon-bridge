@@ -23,6 +23,10 @@ interface WildHoldProps {
   /** Drop back into the hand when the rules allow keeping the wild. */
   handRef?: React.RefObject<HTMLElement | null>
   onKeep?: () => void
+  /** Hide the resting card while it is still flying in. */
+  hidden?: boolean
+  /** Measures the resting spot, including while the card is hidden. */
+  holdRef?: React.RefObject<HTMLDivElement | null>
 }
 
 function pointInRect(x: number, y: number, r: DOMRect): boolean {
@@ -40,6 +44,8 @@ export default function WildHold({
   onDrop,
   handRef,
   onKeep,
+  hidden = false,
+  holdRef,
 }: WildHoldProps) {
   const restRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{
@@ -111,7 +117,10 @@ export default function WildHold({
   return (
     <>
       <div
-        ref={restRef}
+        ref={(el) => {
+          restRef.current = el
+          if (holdRef) holdRef.current = el
+        }}
         data-wild-hold
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -125,8 +134,8 @@ export default function WildHold({
           height: 96,
           transform: 'translate(-50%, -50%)',
           zIndex: 30,
-          pointerEvents: 'auto',
-          visibility: lifted ? 'hidden' : 'visible',
+          pointerEvents: hidden ? 'none' : 'auto',
+          visibility: hidden || lifted ? 'hidden' : 'visible',
           filter: 'drop-shadow(0 10px 16px rgba(0,0,0,0.45))',
           cursor: 'grab',
         }}

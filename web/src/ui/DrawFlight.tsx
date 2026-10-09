@@ -18,6 +18,10 @@ export interface DrawFlightProps {
   endRotationDeg?: number
   /** Scale at arrival relative to a full-size card. */
   endScale?: number
+  /** Rotation while the card is still on its source, in degrees. */
+  startRotationDeg?: number
+  /** Scale at the source relative to a full-size card. */
+  startScale?: number
 }
 
 // Match CSS variable values
@@ -41,6 +45,8 @@ function DrawFlightInner({
   targetPoint = null,
   endRotationDeg = 0,
   endScale,
+  startRotationDeg = 0,
+  startScale = 1,
 }: DrawFlightProps) {
   const [phase, setPhase] = useState<Phase>('initial')
   const [tgtPos, setTgtPos] = useState<{ x: number; y: number } | null>(null)
@@ -64,7 +70,7 @@ function DrawFlightInner({
     case 'initial':
       posX = srcX
       posY = srcY
-      scale = 1
+      scale = startScale
       break
     case 'to-center':
     case 'hold':
@@ -79,7 +85,7 @@ function DrawFlightInner({
       break
   }
 
-  const rotation = phase === 'to-hand' ? endRotationDeg : 0
+  const rotation = phase === 'to-hand' ? endRotationDeg : phase === 'initial' ? startRotationDeg : 0
 
   const transition =
     phase === 'initial' || phase === 'hold'

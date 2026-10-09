@@ -7,10 +7,6 @@ import { prepSlotLandingPos } from './GoDownPrep'
 
 interface HandViewProps {
   cards: Card[]
-  selectedIds: Set<string>
-  onToggle: (cardId: string) => void
-  /** Allow click-to-select (meld building). */
-  canSelect: boolean
   /** Allow drag-to-reorder within the hand. */
   canReorder: boolean
   /** Allow dropping a dragged card onto the discard pile. */
@@ -55,9 +51,8 @@ interface HandViewProps {
     sourceRect: DOMRect,
     side?: 'left' | 'right',
   ) => void
-  /** Undo plays onto existing sets. Shown at the lower left of the hand. */
+  /** Undo plays onto existing sets. Mirrors the lower hand-scroll circle. */
   showUndo?: boolean
-  canUndo?: boolean
   onUndo?: () => void
 }
 
@@ -75,6 +70,22 @@ const REORDER_POP_MS = 500
 
 /** Width reserved for the side chevron column when pagination is active. */
 const PAGER_W = 40
+/** Visible circle shared by the hand pager and the undo control. */
+const SIDE_CIRCLE = 22
+/** Gap between the hand's vertical midpoint and the lower side circle. */
+const LOWER_CIRCLE_PAD = 12
+/** Padding above the card rows inside the hand block. */
+const HAND_BLOCK_PAD_TOP = 14
+/**
+ * Distance from the bottom of the hand block to the lower side circle.
+ * The circle is centered in the two-row hand (pad + 1.4×card), then shifted
+ * down by LOWER_CIRCLE_PAD. The hand is bottom-anchored and its lower portion
+ * hangs off the screen, so this offset is measured from the bottom — a
+ * shorter one-row hand must not recompute it from its own midpoint.
+ */
+const LOWER_CIRCLE_BOTTOM = `calc((${HAND_BLOCK_PAD_TOP}px + var(--card-h) * 1.4) / 2 - ${LOWER_CIRCLE_PAD + SIDE_CIRCLE}px)`
+/** Circle inset that mirrors the pager column (right: -10, width PAGER_W). */
+const SIDE_CIRCLE_OUTSET = (PAGER_W - SIDE_CIRCLE) / 2 - 10
 /** Duration of the slide-in animation when changing hand pages. */
 const PAGE_SLIDE_MS = 220
 /** Milliseconds to hover a chevron before triggering a page during drag. */
@@ -189,7 +200,6 @@ function insertIndexAtPoint(
 
 interface HandRowProps {
   cards: Card[]
-  selectedIds: Set<string>
   onCardPointerDown: (cardId: string, e: React.PointerEvent) => void
   canInteract: boolean
   inflightCardIds: ReadonlySet<string>
@@ -209,7 +219,6 @@ interface HandRowProps {
 
 function HandRow({
   cards,
-  selectedIds,
   onCardPointerDown,
   canInteract,
   inflightCardIds,
@@ -292,10 +301,7 @@ function HandRow({
                 : undefined,
             }}
           >
-            <CardView
-              card={card}
-              selected={selectedIds.has(card.id)}
-            />
+            <CardView card={card} />
           </div>
         )
       })}
@@ -305,9 +311,6 @@ function HandRow({
 
 export default function HandView({
   cards,
-  selectedIds,
-  onToggle,
-  canSelect,
   canReorder,
   canDiscard,
   discardZoneRef,
@@ -328,7 +331,6 @@ export default function HandView({
   onDropToMeld,
   meldEnds,
   showUndo,
-  canUndo,
   onUndo,
 }: HandViewProps) {
   const measureRef = useRef<HTMLDivElement | null>(null)
@@ -379,7 +381,7 @@ export default function HandView({
   const safeRowOffset = Math.min(rowOffset, maxRowOffset)
   const showPager = displayCards.length > HAND_PAGE_SIZE
   const canInteract =
-    canSelect || canReorder || canDiscard || (meldDropZones?.length ?? 0) > 0
+    canReorder || canDiscard || (meldDropZones?.length ?? 0) > 0 || (prepSlotRefs?.length ?? 0) > 0
 
   // Keep row offset in range when the hand shrinks.
   useEffect(() => {
@@ -428,14 +430,12 @@ export default function HandView({
   // Latest props/state for window pointer handlers (stable effect).
   const latestRef = useRef({
     cards,
-    canSelect,
     canReorder,
     canDiscard,
     discardZoneRef,
     onReorder,
     onDiscardCard,
     onDiscardHoverChange,
-    onToggle,
     maxRowOffset,
     safeRowOffset,
     showPager,
@@ -451,14 +451,12 @@ export default function HandView({
   })
   latestRef.current = {
     cards,
-    canSelect,
     canReorder,
     canDiscard,
     discardZoneRef,
     onReorder,
     onDiscardCard,
     onDiscardHoverChange,
-    onToggle,
     maxRowOffset,
     safeRowOffset,
     showPager,
@@ -649,9 +647,6 @@ export default function HandView({
         return
       }
       clearLift()
-      if (commit === 'click' && L.canSelect) {
-        L.onToggle(cardId)
-      }
     }
 
     const onMove = (e: PointerEvent) => {
@@ -921,7 +916,7 @@ export default function HandView({
             width: handBlockWidth > 0 ? handBlockWidth : '100%',
             maxWidth: '100%',
             margin: '0 auto',
-            paddingTop: '14px',
+            paddingTop: HAND_BLOCK_PAD_TOP,
             minHeight: hasFrontRow
               ? 'calc(var(--card-h) * 1.4 + 14px)'
               : 'calc(var(--card-h) + 14px)',
@@ -973,7 +968,6 @@ export default function HandView({
                 >
                   <HandRow
                     cards={rowCards}
-                    selectedIds={selectedIds}
                     onCardPointerDown={onCardPointerDown}
                     canInteract={isVisible && canInteract && !isSettling}
                     inflightCardIds={pendingIds}
@@ -997,15 +991,13 @@ export default function HandView({
           <button
             type="button"
             aria-label="Undo last play"
-            disabled={!canUndo}
             onClick={onUndo}
             style={{
               position: 'absolute',
-              left: -10,
-              top: '50%',
-              marginTop: 12,
-              width: 22,
-              height: 22,
+              left: SIDE_CIRCLE_OUTSET,
+              bottom: LOWER_CIRCLE_BOTTOM,
+              width: SIDE_CIRCLE,
+              height: SIDE_CIRCLE,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -1013,10 +1005,10 @@ export default function HandView({
               color: 'var(--text)',
               border: '1px solid var(--border)',
               borderRadius: '50%',
-              opacity: canUndo ? 1 : 0.4,
-              cursor: canUndo ? 'pointer' : 'default',
+              cursor: 'pointer',
               padding: 0,
               zIndex: 5,
+              pointerEvents: 'auto',
             }}
           >
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -1074,7 +1066,7 @@ export default function HandView({
                 display: 'flex',
                 alignItems: 'flex-end',
                 justifyContent: 'center',
-                paddingBottom: '12px',
+                paddingBottom: LOWER_CIRCLE_PAD,
                 background: 'transparent',
                 border: 'none',
                 cursor: safeRowOffset <= 0 ? 'default' : 'pointer',
@@ -1082,8 +1074,8 @@ export default function HandView({
             >
               <span
                 style={{
-                  width: '22px',
-                  height: '22px',
+                  width: SIDE_CIRCLE,
+                  height: SIDE_CIRCLE,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1112,7 +1104,7 @@ export default function HandView({
                 display: 'flex',
                 alignItems: 'flex-start',
                 justifyContent: 'center',
-                paddingTop: '12px',
+                paddingTop: LOWER_CIRCLE_PAD,
                 background: 'transparent',
                 border: 'none',
                 cursor: safeRowOffset >= maxRowOffset ? 'default' : 'pointer',
@@ -1120,8 +1112,8 @@ export default function HandView({
             >
               <span
                 style={{
-                  width: '22px',
-                  height: '22px',
+                  width: SIDE_CIRCLE,
+                  height: SIDE_CIRCLE,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1182,7 +1174,7 @@ export default function HandView({
               : 'none',
           }}
         >
-          <CardView card={draggedCard} selected={selectedIds.has(draggedCard.id)} />
+          <CardView card={draggedCard} />
         </div>
       )}
     </div>
