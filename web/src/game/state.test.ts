@@ -5,6 +5,8 @@ import {
   continueAfterRound,
   createGame,
   drawFromDeck,
+  revealOpeningDiscard,
+  setReady,
   canBuyDiscard,
   declareBuy,
   claimDiscardAsDraw,
@@ -28,6 +30,13 @@ function makeGame(numHumans = 3, numAI = 0) {
   return createGame(setups)
 }
 
+/** Prep check-in, then the opening discard, so tests begin in the buy window. */
+function openRound(numHumans = 3, numAI = 0) {
+  let state = makeGame(numHumans, numAI)
+  for (const p of state.players) state = setReady(state, p.index, true)
+  return revealOpeningDiscard(state)
+}
+
 function card(id: string, color: Card['color'], number: number): Card {
   return { id, color, number }
 }
@@ -41,6 +50,7 @@ function player(index: number, hand: Card[], extras: Partial<PlayerState> = {}):
     hand,
     hasGoneDown: false,
     cumulativeScore: 0,
+    roundScores: [],
     ...extras,
   }
 }
@@ -71,15 +81,17 @@ function stubPlayState(opts: {
     extendHistory: [],
     pendingWild: null,
     roundVictorIndex: null,
+    ready: [false, false, false],
     meldIdCounter: tableMetlds.length,
     lastError: null,
   }
 }
 
 describe('createGame', () => {
-  it('starts in buy-window phase', () => {
+  it('starts in round-prep with nobody ready', () => {
     const state = makeGame(3)
-    expect(state.phase).toBe('buy-window')
+    expect(state.phase).toBe('round-prep')
+    expect(state.ready).toEqual([false, false, false])
   })
 
   it('deals 11 cards to each player', () => {
@@ -89,9 +101,10 @@ describe('createGame', () => {
     }
   })
 
-  it('starts discard pile with one card', () => {
+  it('leaves the discard pile empty until the round begins', () => {
     const state = makeGame(3)
-    expect(state.discardPile).toHaveLength(1)
+    expect(state.discardPile).toHaveLength(0)
+    expect(state.drawPile.length).toBeGreaterThan(0)
   })
 
   it('throws for fewer than 3 players', () => {
@@ -126,21 +139,51 @@ describe('createGame', () => {
   })
 })
 
+describe('round prep', () => {
+  it('lets a player take ready back', () => {
+    const dealt = makeGame(3)
+    const ready = setReady(dealt, 1, true)
+    expect(ready.ready).toEqual([false, true, false])
+    const back = setReady(ready, 1, false)
+    expect(back.ready).toEqual([false, false, false])
+  })
+
+  it('refuses to flip the opening discard until everyone is ready', () => {
+    const dealt = makeGame(3)
+    const blocked = revealOpeningDiscard(setReady(dealt, 0, true))
+    expect(blocked.phase).toBe('round-prep')
+    expect(blocked.discardPile).toHaveLength(0)
+    expect(blocked.lastError).toBeTruthy()
+  })
+
+  it('flips one card and opens the buy window when everyone is ready', () => {
+    let dealt = makeGame(3)
+    for (const p of dealt.players) dealt = setReady(dealt, p.index, true)
+    const opened = revealOpeningDiscard(dealt)
+    expect(opened.phase).toBe('buy-window')
+    expect(opened.discardPile).toHaveLength(1)
+    expect(opened.drawPile).toHaveLength(dealt.drawPile.length - 1)
+    expect(opened.discardPile[0]).toEqual(dealt.drawPile[dealt.drawPile.length - 1])
+    expect(opened.lastDiscarderIndex).toBeNull()
+    expect(opened.ready.every((r) => r === false)).toBe(true)
+  })
+})
+
 describe('drawFromDeck', () => {
   it('advances phase to play-or-discard', () => {
-    const s = drawFromDeck(makeGame())
+    const s = drawFromDeck(openRound())
     expect(s.phase).toBe('play-or-discard')
     expect(s.hasDrawnThisTurn).toBe(true)
   })
 
   it('gives the current player one more card', () => {
-    const base = makeGame()
+    const base = openRound()
     const s = drawFromDeck(base)
     expect(s.players[0].hand).toHaveLength(12)
   })
 
   it('returns error if not in buy-window or draw phase', () => {
-    const s = drawFromDeck(makeGame())  // now in play-or-discard
+    const s = drawFromDeck(openRound())  // now in play-or-discard
     const s2 = drawFromDeck(s)
     expect(s2.lastError).toBeTruthy()
   })
@@ -148,7 +191,7 @@ describe('drawFromDeck', () => {
 
 describe('claimDiscardAsDraw', () => {
   it('gives top discard to current player', () => {
-    const base = makeGame()
+    const base = openRound()
     const topCard = base.discardPile[base.discardPile.length - 1]
     const s = claimDiscardAsDraw(base)
     expect(s.players[0].hand.find((c) => c.id === topCard.id)).toBeTruthy()
@@ -159,7 +202,7 @@ describe('claimDiscardAsDraw', () => {
 
 describe('declareBuy', () => {
   it('records the caller without moving cards', () => {
-    const base = makeGame(3)
+    const base = openRound(3)
     const s = declareBuy(base, 1)
     expect(s.lastError).toBeNull()
     expect(s.buyIntents).toEqual([1])
@@ -169,7 +212,7 @@ describe('declareBuy', () => {
   })
 
   it('lets a later player call buy after someone else has', () => {
-    const base = makeGame(3)
+    const base = openRound(3)
     const first = declareBuy(base, 1)
     expect(canBuyDiscard(first, 2)).toBe(true)
     expect(canBuyDiscard(first, 1)).toBe(false)
@@ -179,12 +222,12 @@ describe('declareBuy', () => {
   })
 
   it('returns error if current player tries to buy', () => {
-    const s = declareBuy(makeGame(3), 0)
+    const s = declareBuy(openRound(3), 0)
     expect(s.lastError).toBeTruthy()
   })
 
   it('returns error if the discarder tries to buy their own discard', () => {
-    let s = drawFromDeck(makeGame(3))
+    let s = drawFromDeck(openRound(3))
     const cardId = s.players[0].hand[0].id
     s = discard(s, cardId)
     expect(s.currentPlayerIndex).toBe(1)
@@ -195,7 +238,7 @@ describe('declareBuy', () => {
   })
 
   it('allows a non-next player to call buy on someone else\'s discard', () => {
-    let s = drawFromDeck(makeGame(3))
+    let s = drawFromDeck(openRound(3))
     const cardId = s.players[0].hand[0].id
     s = discard(s, cardId)
     expect(canBuyDiscard(s, 2)).toBe(true)
@@ -205,7 +248,7 @@ describe('declareBuy', () => {
   })
 
   it('allows buying the initial deck-flip discard', () => {
-    const s = makeGame(3)
+    const s = openRound(3)
     expect(s.lastDiscarderIndex).toBeNull()
     expect(canBuyDiscard(s, 1)).toBe(true)
   })
@@ -213,7 +256,7 @@ describe('declareBuy', () => {
 
 describe('drawFromDeck with a pending buy', () => {
   it('deals the discard and a penalty to the first buyer, then draws for the active player', () => {
-    const base = makeGame(3)
+    const base = openRound(3)
     const top = base.discardPile[base.discardPile.length - 1]
     const penalty = base.drawPile[base.drawPile.length - 1]
     const drawn = base.drawPile[base.drawPile.length - 2]
@@ -231,14 +274,14 @@ describe('drawFromDeck with a pending buy', () => {
   })
 
   it('closes the buy window so nobody else can call', () => {
-    const s = drawFromDeck(declareBuy(makeGame(3), 1))
+    const s = drawFromDeck(declareBuy(openRound(3), 1))
     expect(canBuyDiscard(s, 2)).toBe(false)
   })
 })
 
 describe('claimDiscardAsDraw denies a pending buy', () => {
   it('gives the discard to the active player and nothing to the buyer', () => {
-    const base = makeGame(3)
+    const base = openRound(3)
     const top = base.discardPile[base.discardPile.length - 1]
     const called = declareBuy(base, 1)
     const s = claimDiscardAsDraw(called)
@@ -271,7 +314,7 @@ describe('reorderHand', () => {
 
 describe('discard', () => {
   it('removes card from hand and adds to discard pile', () => {
-    let s = drawFromDeck(makeGame())
+    let s = drawFromDeck(openRound())
     const cardId = s.players[0].hand[0].id
     s = discard(s, cardId)
     expect(s.players[0].hand.find((c) => c.id === cardId)).toBeUndefined()
@@ -279,7 +322,7 @@ describe('discard', () => {
   })
 
   it('advances to next player and resets to buy-window', () => {
-    let s = drawFromDeck(makeGame())
+    let s = drawFromDeck(openRound())
     const cardId = s.players[0].hand[0].id
     s = discard(s, cardId)
     expect(s.currentPlayerIndex).toBe(1)
@@ -306,14 +349,18 @@ describe('discard', () => {
     expect(next.lastError).toBeNull()
     const dealt = continueAfterRound(next)
     expect(dealt.roundIndex).toBe(1)
-    expect(dealt.phase).toBe('buy-window')
+    expect(dealt.phase).toBe('round-prep')
+    expect(dealt.discardPile).toHaveLength(0)
+    expect(next.players[0].roundScores).toEqual([0])
+    expect(next.players[0].cumulativeScore).toBe(0)
+    expect(next.players[1].roundScores).toHaveLength(1)
   })
 })
 
 describe('goDown', () => {
   it('returns error if round requires groups but given runs', () => {
     // Round 1 = 2 groups, 0 runs
-    let s = drawFromDeck(makeGame())
+    let s = drawFromDeck(openRound())
     // Build a "run" (invalid as group) from hand cards — just test validation path
     const runIds = s.players[0].hand.slice(0, 4).map((c) => c.id)
     const groupIds = s.players[0].hand.slice(4, 7).map((c) => c.id)
@@ -324,7 +371,7 @@ describe('goDown', () => {
   })
 
   it('rejects going down with wrong number of melds', () => {
-    let s = drawFromDeck(makeGame())
+    let s = drawFromDeck(openRound())
     const oneMeld = [s.players[0].hand.slice(0, 3).map((c) => c.id)]
     const s2 = goDown(s, oneMeld)
     expect(s2.lastError).toBeTruthy()
@@ -355,7 +402,7 @@ describe('goDown', () => {
 
 describe('extendMeld', () => {
   it('returns error if player has not gone down', () => {
-    let s = drawFromDeck(makeGame())
+    let s = drawFromDeck(openRound())
     const s2 = extendMeld(s, 'nonexistent', s.players[0].hand[0].id)
     expect(s2.lastError).toBeTruthy()
   })

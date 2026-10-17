@@ -39,6 +39,7 @@ function player(index: number, hand: Card[], extras: Partial<PlayerState> = {}):
     hand,
     hasGoneDown: false,
     cumulativeScore: 0,
+    roundScores: [],
     ...extras,
   }
 }
@@ -91,6 +92,7 @@ function stubState(opts: {
     extendHistory: [],
     pendingWild: null,
     roundVictorIndex: null,
+    ready: players.map(() => false),
     meldIdCounter: tableMetlds.length,
     lastError: null,
   }
@@ -465,6 +467,11 @@ describe('smoke: all-AI game progresses', () => {
       decisions < maxDecisions
     ) {
       if (state.phase === 'round-end') break
+      if (state.phase === 'round-prep') {
+        state = runAIStep(state)
+        decisions++
+        continue
+      }
 
       if (state.phase === 'buy-window' || state.phase === 'draw') {
         if (state.phase === 'buy-window') {

@@ -4,6 +4,7 @@ import {
   decideBuy,
   decideDraw,
   decidePlay,
+  evaluateHand,
   sampleBuyDelayMs,
   sampleDrawWindowMs,
   sampleThinkDelayMs,
@@ -39,6 +40,8 @@ import {
   goDown,
   keepPendingWild,
   reorderHand,
+  revealOpeningDiscard,
+  setReady,
   topDiscard,
   undoExtend,
 } from '../game/state'
@@ -58,6 +61,8 @@ import DrawFlight from '../ui/DrawFlight'
 import GoDownPrep from '../ui/GoDownPrep'
 import { predictedSlotCenter } from '../ui/fan-end'
 import HandView from '../ui/HandView'
+import PrepPills from '../ui/PrepPills'
+import RoundRecap from '../ui/RoundRecap'
 import TableCallout from '../ui/TableCallout'
 import WildHold from '../ui/WildHold'
 import OpponentSeat, { SEAT_AVATAR_SIZE, SEAT_EDGE_INSET_PX } from '../ui/OpponentSeat'
@@ -98,6 +103,8 @@ type Action =
   | { type: 'UNDO_EXTEND' }
   | { type: 'KEEP_WILD' }
   | { type: 'CONTINUE_ROUND' }
+  | { type: 'SET_READY'; playerIndex: number; ready: boolean }
+  | { type: 'REVEAL_OPENING' }
   | { type: 'DISCARD'; cardId: string }
   | { type: 'REORDER'; playerIndex: number; orderedIds: string[] }
   | { type: 'GO_DOWN'; meldCardArrays: string[][] }
@@ -118,6 +125,10 @@ function reducer(state: GameState, action: Action): GameState {
       return keepPendingWild(state)
     case 'CONTINUE_ROUND':
       return continueAfterRound(state)
+    case 'SET_READY':
+      return setReady(state, action.playerIndex, action.ready)
+    case 'REVEAL_OPENING':
+      return revealOpeningDiscard(state)
     case 'DISCARD':
       return discard(state, action.cardId)
     case 'REORDER':
@@ -195,6 +206,9 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const [hoveredMeldId, setHoveredMeldId] = useState<string | null>(null)
   const [hoveredMeldSide, setHoveredMeldSide] = useState<MeldEnd | null>(null)
   const [scoresOpen, setScoresOpen] = useState(false)
+  const [recapOpen, setRecapOpen] = useState(false)
+  const [prepBeat, setPrepBeat] = useState<'open' | 'grace' | 'countdown'>('open')
+  const [countdownLeft, setCountdownLeft] = useState(3)
   const [discardHot, setDiscardHot] = useState(false)
   const [zoomedMeld, setZoomedMeld] = useState<SetZoomAnchor | null>(null)
   const portrait = usePortrait()
@@ -218,6 +232,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     cardId: string
   } | null>(null)
   const landingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const revealStarted = useRef(false)
 
   const deckWrapRef = useRef<HTMLDivElement | null>(null)
   const discardWrapRef = useRef<HTMLDivElement | null>(null)
@@ -361,16 +376,93 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     }
   }, [state.phase, state.currentPlayerIndex, state.roundIndex])
 
-  // Hold the finished table, let the player say they're out, then deal.
+  // Hold the finished table, let the player say they're out, then show the recap.
   useEffect(() => {
-    if (state.phase !== 'round-end') return
+    if (state.phase !== 'round-end') {
+      setRecapOpen(false)
+      return
+    }
     const victor = state.roundVictorIndex
     if (victor != null) showBubble(victor, OUT_BUBBLE_TEXT, 'out')
-    const timer = setTimeout(() => dispatch({ type: 'CONTINUE_ROUND' }), 1600)
+    const timer = setTimeout(() => setRecapOpen(true), 1600)
     return () => clearTimeout(timer)
   }, [state.phase, state.roundIndex, state.roundVictorIndex, showBubble])
 
-  // Round open and the human's turn. Fresh deals name the round.
+  // Bots classify their hand, then check in after a short wait.
+  useEffect(() => {
+    if (state.phase !== 'round-prep') return
+    const roundIndex = state.roundIndex
+    const timers: ReturnType<typeof setTimeout>[] = []
+    for (const p of state.players) {
+      if (!p.isAI || state.ready[p.index]) continue
+      evaluateHand(p.hand, state.tableMetlds, roundIndex, p.hasGoneDown)
+      const delay = 1000 + Math.random() * 1000
+      timers.push(setTimeout(() => {
+        const s = stateRef.current
+        if (s.phase !== 'round-prep' || s.roundIndex !== roundIndex) return
+        if (s.ready[p.index]) return
+        dispatch({ type: 'SET_READY', playerIndex: p.index, ready: true })
+      }, delay))
+    }
+    return () => {
+      for (const timer of timers) clearTimeout(timer)
+    }
+  }, [state.phase, state.roundIndex])
+
+  // Last ready check-in starts a grace period, then a countdown, then the flip.
+  useEffect(() => {
+    if (state.phase !== 'round-prep') {
+      setPrepBeat('open')
+      revealStarted.current = false
+      return
+    }
+    if (state.ready.length === 0 || !state.ready.every(Boolean)) {
+      setPrepBeat('open')
+      return
+    }
+    setPrepBeat('grace')
+    const graceTimer = setTimeout(() => {
+      const s = stateRef.current
+      if (s.phase !== 'round-prep' || !s.ready.every(Boolean)) return
+      setPrepBeat('countdown')
+    }, 1000)
+    return () => clearTimeout(graceTimer)
+  }, [state.phase, state.roundIndex, state.ready])
+
+  useEffect(() => {
+    if (state.phase !== 'round-prep' || prepBeat !== 'countdown') return
+    setCountdownLeft(3)
+    const started = Date.now()
+    const tick = setInterval(() => {
+      const left = Math.ceil((3000 - (Date.now() - started)) / 1000)
+      setCountdownLeft(Math.max(1, left))
+    }, 200)
+    const done = setTimeout(() => {
+      const s = stateRef.current
+      if (s.phase !== 'round-prep' || revealStarted.current) return
+      revealStarted.current = true
+      const card = s.drawPile[s.drawPile.length - 1]
+      const source = deckWrapRef.current?.getBoundingClientRect()
+      if (card && source && source.width > 0) {
+        enqueueFlight({
+          card,
+          sourceRect: source,
+          targetRef: discardWrapRef,
+          faceDown: false,
+          viaCenter: false,
+          pendingAction: { type: 'REVEAL_OPENING' },
+        })
+      } else {
+        dispatch({ type: 'REVEAL_OPENING' })
+      }
+    }, 3000)
+    return () => {
+      clearInterval(tick)
+      clearTimeout(done)
+    }
+  }, [prepBeat, state.phase, state.roundIndex, enqueueFlight])
+
+  // The human's later turns. The opening of a round is the countdown, not a callout.
   useEffect(() => {
     const entered = prevCalloutPhase.current !== state.phase
     prevCalloutPhase.current = state.phase
@@ -383,13 +475,13 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     if (roundLine) announcedRound.current = state.roundIndex
     if (bootCallout.current) {
       bootCallout.current = false
-      if (state.phase === 'buy-window' && !currentPlayer.isAI) {
-        showFanfare(roundLine ? `Round ${state.roundIndex + 1} — your turn` : 'Your turn')
+      if (state.phase === 'buy-window' && !currentPlayer.isAI && !roundLine) {
+        showFanfare('Your turn')
       }
       return
     }
-    if (!entered || state.phase !== 'buy-window' || currentPlayer.isAI) return
-    showFanfare(roundLine ? `Round ${state.roundIndex + 1} — your turn` : 'Your turn')
+    if (!entered || state.phase !== 'buy-window' || currentPlayer.isAI || roundLine) return
+    showFanfare('Your turn')
   }, [
     state.phase,
     state.roundIndex,
@@ -1193,7 +1285,9 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               displayName={player.displayName}
               avatarId={player.avatarId}
               cardCount={visibleOpponentCount(player.index, player.hand.length)}
-              isCurrent={player.index === state.currentPlayerIndex}
+              isCurrent={
+                state.phase !== 'round-prep' && player.index === state.currentPlayerIndex
+              }
               handAnchorRef={handAnchorRefs[player.index]}
               onRevealName={() => showBubble(player.index, player.displayName, 'name')}
             />
@@ -1247,6 +1341,24 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           )
         })}
 
+        <PrepPills
+          regions={layout.regions}
+          ready={state.ready}
+          leaderIndex={state.currentPlayerIndex}
+          showReady={state.phase === 'round-prep' && prepBeat !== 'countdown'}
+          showLeader={state.phase === 'round-prep'}
+          humanIndex={humanPlayerIndex}
+          onToggleReady={() => {
+            if (humanPlayerIndex < 0 || prepBeat === 'countdown') return
+            if (state.phase !== 'round-prep') return
+            dispatch({
+              type: 'SET_READY',
+              playerIndex: humanPlayerIndex,
+              ready: !state.ready[humanPlayerIndex],
+            })
+          }}
+        />
+
         {/* Draw + discard + Buy — center of the table.
             The outer div positions the anchor; the inner div centers and scales. */}
         <div
@@ -1260,6 +1372,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         >
           <div
             style={{
+              position: 'relative',
               transform: `translate(-50%, -50%) scale(${layout.pileScale})`,
               display: 'flex',
               flexDirection: 'column',
@@ -1267,6 +1380,40 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               gap: '10px',
             }}
           >
+            {state.phase === 'round-prep' && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: '100%',
+                  marginBottom: '10px',
+                  textAlign: 'center',
+                  color: 'var(--text)',
+                  pointerEvents: 'none',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>
+                  Round {state.roundIndex + 1}
+                </div>
+                <div
+                  style={{
+                    fontSize: '2.4rem',
+                    fontWeight: 700,
+                    lineHeight: 1,
+                    height: '2.4rem',
+                    marginTop: '4px',
+                    color: 'var(--accent)',
+                    visibility: prepBeat === 'countdown' ? 'visible' : 'hidden',
+                  }}
+                >
+                  {countdownLeft}
+                </div>
+              </div>
+            )}
             {/* Piles row — deck and discard bottom-aligned */}
             <div style={{ display: 'flex', gap: '28px', alignItems: 'flex-end' }}>
               <div
@@ -1322,16 +1469,15 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               </div>
             </div>
 
-            {/* Button row — mirrors the 28px pile gap:
-                  left cell (deck column) → GO DOWN
-                  right cell (discard column) → BUY IT */}
             <div
               style={{
                 display: 'flex',
                 gap: '28px',
                 width: '100%',
-                pointerEvents: 'auto',
+                pointerEvents: state.phase === 'round-prep' ? 'none' : 'auto',
+                visibility: state.phase === 'round-prep' ? 'hidden' : 'visible',
               }}
+              aria-hidden={state.phase === 'round-prep'}
             >
               {/* Deck column: GO DOWN */}
               <div style={{ width: 'var(--card-w)', flexShrink: 0 }}>
@@ -1555,7 +1701,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               avatarId={state.players[humanPlayerIndex].avatarId}
               size={SEAT_AVATAR_SIZE}
               alt={state.players[humanPlayerIndex].displayName}
-              active={state.currentPlayerIndex === humanPlayerIndex}
+              active={
+                state.phase !== 'round-prep' &&
+                state.currentPlayerIndex === humanPlayerIndex
+              }
             />
           </div>
         )}
@@ -1595,6 +1744,16 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       <TableCallout text={callout?.text ?? null} tone={callout?.tone ?? 'fanfare'} top={layout.pileTopPct} />
 
       <SpeechBubbleLayer bubbles={bubbles} anchors={anchors} sideFor={bubbleSide} />
+
+      {recapOpen && state.phase === 'round-end' && (
+        <RoundRecap
+          players={state.players}
+          humanIndex={humanPlayerIndex}
+          roundIndex={state.roundIndex}
+          victorIndex={state.roundVictorIndex}
+          onContinue={() => dispatch({ type: 'CONTINUE_ROUND' })}
+        />
+      )}
 
       <ScoreBoard
         players={state.players}

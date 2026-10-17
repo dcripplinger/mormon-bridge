@@ -24,6 +24,7 @@ function player(index: number, hand: Card[], extras: Partial<PlayerState> = {}):
     hand,
     hasGoneDown: false,
     cumulativeScore: 0,
+    roundScores: [],
     ...extras,
   }
 }
@@ -122,6 +123,7 @@ describe('pair-flood readiness (round 1)', () => {
       extendHistory: [],
       pendingWild: null,
       roundVictorIndex: null,
+      ready: [false, false, false],
       meldIdCounter: 0,
       lastError: null,
     }

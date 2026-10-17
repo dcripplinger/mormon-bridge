@@ -30,6 +30,8 @@ import {
   extendMeld,
   goDown,
   keepPendingWild,
+  revealOpeningDiscard,
+  setReady,
   topDiscard,
 } from './state'
 
@@ -984,6 +986,17 @@ export function sampleThinkDelayMs(rng: Rng = Math.random): number {
  * - play-or-discard: full decidePlay plan (go down, extends, discard)
  */
 export function runAIStep(state: GameState): GameState {
+  if (state.phase === 'round-prep') {
+    let s = state
+    for (const p of s.players) {
+      if (!p.isAI || s.ready[p.index]) continue
+      evaluateHand(p.hand, s.tableMetlds, s.roundIndex, p.hasGoneDown)
+      s = setReady(s, p.index, true)
+    }
+    if (s.ready.every(Boolean)) return revealOpeningDiscard(s)
+    return s
+  }
+
   if (state.phase === 'buy-window') {
     let s = state
     for (const p of s.players) {

@@ -17,6 +17,7 @@ import { ROUND_REQUIREMENTS, TOTAL_ROUNDS, isValidGroup, isValidRun, scoreHand }
 // ---------------------------------------------------------------------------
 
 export type TurnPhase =
+  | 'round-prep'      // hands dealt; players check in before the opening discard
   | 'buy-window'      // before draw: other players may buy the top discard
   | 'draw'            // current player chooses deck or discard (if no buy happened)
   | 'play-or-discard' // current player may play melds, then must discard
@@ -48,6 +49,8 @@ export interface PlayerState {
   hand: Card[]
   hasGoneDown: boolean
   cumulativeScore: number
+  /** Points taken on in each completed round, in order. */
+  roundScores: number[]
 }
 
 /** Inputs used to start a local game from the menu. */
@@ -83,6 +86,8 @@ export interface GameState {
   pendingWild: Card | null
   /** Who emptied their hand, while phase is round-end. */
   roundVictorIndex: number | null
+  /** Per seat, true once that player has checked in during round-prep. */
+  ready: boolean[]
   meldIdCounter: number
   // Transient: last error message for the UI to surface, cleared on next action
   lastError: string | null
@@ -105,6 +110,7 @@ export function createGame(setups: PlayerSetup[]): GameState {
     hand: [],
     hasGoneDown: false,
     cumulativeScore: 0,
+    roundScores: [],
   }))
   return startRound({ players, roundIndex: 0, meldIdCounter: 0 })
 }
@@ -119,32 +125,60 @@ function startRound(opts: {
   const shuffled = shuffleDeck(raw)
   const { hands, drawPile } = dealHands(shuffled, opts.players.length)
 
-  // Flip one card to start discard pile
-  const firstDiscard = drawPile[drawPile.length - 1]
-  const pile = drawPile.slice(0, drawPile.length - 1)
-
   const players: PlayerState[] = opts.players.map((p, i) => ({
     ...p,
     hand: sortHand([...hands[i]]),
     hasGoneDown: false,
+    roundScores: p.roundScores ?? [],
     // cumulative score carries over
   }))
 
   return {
     players,
-    drawPile: pile,
-    discardPile: firstDiscard ? [firstDiscard] : [],
+    drawPile,
+    discardPile: [],
     tableMetlds: [],
     roundIndex,
     currentPlayerIndex: 0,
-    phase: 'buy-window',
+    phase: 'round-prep',
     hasDrawnThisTurn: false,
     lastDiscarderIndex: null,
     buyIntents: [],
     extendHistory: [],
     pendingWild: null,
     roundVictorIndex: null,
+    ready: players.map(() => false),
     meldIdCounter,
+    lastError: null,
+  }
+}
+
+/** Check in or take it back during round prep. Locked once the round begins. */
+export function setReady(state: GameState, playerIndex: number, ready: boolean): GameState {
+  if (state.phase !== 'round-prep') return err(state, 'Not preparing a round')
+  if (playerIndex < 0 || playerIndex >= state.players.length) return err(state, 'Invalid player')
+  if (state.ready[playerIndex] === ready) return state
+  const next = state.ready.slice()
+  next[playerIndex] = ready
+  return { ...state, ready: next, lastError: null }
+}
+
+/**
+ * Turn the top of the deck into the opening discard and open the buy window.
+ * Everyone must already be ready.
+ */
+export function revealOpeningDiscard(state: GameState): GameState {
+  if (state.phase !== 'round-prep') return err(state, 'Not preparing a round')
+  if (!state.ready.every(Boolean)) return err(state, 'Not everyone is ready')
+  if (state.drawPile.length === 0) return err(state, 'Deck is empty')
+  const card = state.drawPile[state.drawPile.length - 1]
+  return {
+    ...state,
+    drawPile: state.drawPile.slice(0, -1),
+    discardPile: [card],
+    phase: 'buy-window',
+    ready: state.players.map(() => false),
+    lastDiscarderIndex: null,
     lastError: null,
   }
 }
@@ -588,15 +622,20 @@ function advanceTurn(state: GameState): GameState {
     extendHistory: [],
     pendingWild: null,
     roundVictorIndex: null,
+    ready: state.players.map(() => false),
     lastError: null,
   }
 }
 
 function finishRound(state: GameState): GameState {
-  const players = state.players.map((p) => ({
-    ...p,
-    cumulativeScore: p.cumulativeScore + scoreHand(p.hand),
-  }))
+  const players = state.players.map((p) => {
+    const taken = scoreHand(p.hand)
+    return {
+      ...p,
+      cumulativeScore: p.cumulativeScore + taken,
+      roundScores: [...(p.roundScores ?? []), taken],
+    }
+  })
   const victor = state.players.findIndex((p) => p.hand.length === 0)
 
   return {
@@ -606,6 +645,7 @@ function finishRound(state: GameState): GameState {
     extendHistory: [],
     pendingWild: null,
     roundVictorIndex: victor === -1 ? state.currentPlayerIndex : victor,
+    ready: state.players.map(() => false),
     lastError: null,
   }
 }

@@ -66,6 +66,7 @@ function stubGameState(): GameState {
         hand: [],
         hasGoneDown: false,
         cumulativeScore: 0,
+        roundScores: [],
       },
     ],
     drawPile: [],
@@ -80,6 +81,7 @@ function stubGameState(): GameState {
     extendHistory: [],
     pendingWild: null,
     roundVictorIndex: null,
+    ready: [false],
     meldIdCounter: 0,
     lastError: null,
   }
@@ -200,6 +202,7 @@ describe('active game', () => {
         hand: [],
         hasGoneDown: false,
         cumulativeScore: 0,
+        roundScores: [],
       },
       {
         index: 2,
@@ -209,6 +212,7 @@ describe('active game', () => {
         hand: [],
         hasGoneDown: false,
         cumulativeScore: 0,
+        roundScores: [],
       },
     ]
     await saveActiveGame(gs)

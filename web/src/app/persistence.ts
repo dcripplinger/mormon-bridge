@@ -131,10 +131,13 @@ export async function loadActiveGame(): Promise<GameState | null> {
     const players = parsed.state.players.map((p, i) => ({
       ...p,
       isAI: i !== 0,
+      roundScores: Array.isArray(p.roundScores) ? p.roundScores : [],
     }))
+    const ready = Array.isArray(parsed.state.ready) ? parsed.state.ready : []
     return {
       ...parsed.state,
       players,
+      ready: players.map((_, i) => ready[i] === true),
       buyIntents: Array.isArray(parsed.state.buyIntents) ? parsed.state.buyIntents : [],
       extendHistory: Array.isArray(parsed.state.extendHistory) ? parsed.state.extendHistory : [],
       pendingWild: parsed.state.pendingWild ?? null,
