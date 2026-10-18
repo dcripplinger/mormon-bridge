@@ -34,18 +34,18 @@ function pillScale(region: SetRegion, stack: number, desired: number): number {
   return Math.min(desired, Math.max(0.7, fit))
 }
 
-/** Sit on the outer edge of the pocket, toward that player's hand. */
+/** A little outside the pocket, toward that player's hand. */
 function edgePlacement(side: SetSide): CSSProperties {
   if (side === 'left') {
-    return { left: 6, top: '50%', transform: 'translateY(-50%)' }
+    return { left: -10, top: '50%', transform: 'translateY(-50%)' }
   }
   if (side === 'right') {
-    return { right: 6, top: '50%', transform: 'translateY(-50%)' }
+    return { right: -10, top: '50%', transform: 'translateY(-50%)' }
   }
   if (side === 'top') {
-    return { top: 6, left: '50%', transform: 'translateX(-50%)' }
+    return { top: -10, left: '50%', transform: 'translateX(-50%)' }
   }
-  return { bottom: 6, left: '50%', transform: 'translateX(-50%)' }
+  return { bottom: -10, left: '50%', transform: 'translateX(-50%)' }
 }
 
 function useMinViewport(): number {
@@ -121,7 +121,7 @@ export default function PrepPills({
                     onToggle={onToggleReady}
                   />
                 ) : (
-                  <span key="first" className="prep-pill">
+                  <span key="first" className="prep-pill prep-pill--leader">
                     1st player
                   </span>
                 ),
@@ -150,13 +150,14 @@ function ReadyPill({
       Ready
     </>
   )
+  const waiting = !checked ? ' prep-pill--waiting' : ''
   if (!interactive) {
-    return <span className="prep-pill">{mark}</span>
+    return <span className={`prep-pill${waiting}`}>{mark}</span>
   }
   return (
     <button
       type="button"
-      className="prep-pill prep-pill--button"
+      className={`prep-pill prep-pill--button${waiting}`}
       aria-pressed={checked}
       onClick={onToggle}
     >

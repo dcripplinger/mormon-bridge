@@ -788,6 +788,64 @@ const BUY_THRESHOLD_BASE = 16
 /** Claim if readiness gains at least one group-card unit (2 pts). */
 const MIN_CLAIM_READINESS_DELTA = 2
 
+function meldSlotsThisRound(roundIndex: number): number {
+  const req = ROUND_REQUIREMENTS[roundIndex]
+  return req.groups + req.runs
+}
+
+/** Players who act before `buyerIndex` gets a turn, starting with the current player. */
+function playersAheadOf(state: GameState, buyerIndex: number): GameState['players'] {
+  const ahead: GameState['players'] = []
+  const count = state.players.length
+  let index = state.currentPlayerIndex
+  while (index !== buyerIndex) {
+    ahead.push(state.players[index])
+    index = (index + 1) % count
+    if (ahead.length > count) break
+  }
+  return ahead
+}
+
+/**
+ * A wild before going down is not scored like a natural. It can fill whichever
+ * set comes together next, and it can move once it is on the table. Buy it
+ * unless it cannot be part of this round's initial down, or a player who acts
+ * first is down to their last card and this wild still does not produce a down.
+ */
+function evaluatePreDownWildBuy(
+  state: GameState,
+  buyerIndex: number,
+  wild: Card,
+): { buy: boolean; reason: string } {
+  const player = state.players[buyerIndex]
+  const slots = meldSlotsThisRound(state.roundIndex)
+  const heldWilds = player.hand.filter(isWild).length
+  if (heldWilds >= slots) {
+    return {
+      buy: false,
+      reason: `Skip ${formatCardShort(wild)}: already holding ${heldWilds} wild(s) for ${slots} meld(s); another wild cannot be laid in the go-down`,
+    }
+  }
+
+  const laysWithWild = findBestGoDown([...player.hand, wild], state.roundIndex) !== null
+  const someoneMayGoOut = playersAheadOf(state, buyerIndex).some(
+    (p) => p.hasGoneDown && p.hand.length <= 1,
+  )
+  if (someoneMayGoOut && !laysWithWild) {
+    return {
+      buy: false,
+      reason: `Skip ${formatCardShort(wild)}: a player ahead is about to go out and this wild still does not make a go-down`,
+    }
+  }
+
+  return {
+    buy: true,
+    reason: laysWithWild
+      ? `Buy ${formatCardShort(wild)}: wild can be laid in a go-down (${heldWilds} held, ${slots} meld slots)`
+      : `Buy ${formatCardShort(wild)}: wild before going down (${heldWilds} held, ${slots} meld slots)`,
+  }
+}
+
 export function decideBuy(state: GameState, buyerIndex: number): boolean {
   if (!canBuyDiscard(state, buyerIndex)) return false
   const top = topDiscard(state)
@@ -829,6 +887,29 @@ export function decideBuy(state: GameState, buyerIndex: number): boolean {
       },
     })
     return false
+  }
+
+  if (isWild(top)) {
+    const wildBuy = evaluatePreDownWildBuy(state, buyerIndex, top)
+    aiLog({
+      playerLabel: label,
+      decision: wildBuy.buy ? 'buy' : 'skipBuy',
+      reason: wildBuy.reason,
+      hand: player.hand,
+      target: top,
+      details: {
+        acquireValue: Number(breakdown.value.toFixed(2)),
+        handSize: player.hand.length,
+        hasGoneDown: false,
+        heldWilds: player.hand.filter(isWild).length,
+        meldSlots: meldSlotsThisRound(state.roundIndex),
+        purposeBefore: breakdown.purposeSummaryBefore,
+        purposeAfter: breakdown.purposeSummaryAfter,
+        readinessDelta: breakdown.readinessDelta,
+        completesGoDown: breakdown.completesGoDown,
+      },
+    })
+    return wildBuy.buy
   }
 
   let threshold = BUY_THRESHOLD_BASE

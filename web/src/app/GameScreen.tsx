@@ -1380,40 +1380,6 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               gap: '10px',
             }}
           >
-            {state.phase === 'round-prep' && (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  right: 0,
-                  bottom: '100%',
-                  marginBottom: '10px',
-                  textAlign: 'center',
-                  color: 'var(--text)',
-                  pointerEvents: 'none',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                }}
-              >
-                <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>
-                  Round {state.roundIndex + 1}
-                </div>
-                <div
-                  style={{
-                    fontSize: '2.4rem',
-                    fontWeight: 700,
-                    lineHeight: 1,
-                    height: '2.4rem',
-                    marginTop: '4px',
-                    color: 'var(--accent)',
-                    visibility: prepBeat === 'countdown' ? 'visible' : 'hidden',
-                  }}
-                >
-                  {countdownLeft}
-                </div>
-              </div>
-            )}
             {/* Piles row — deck and discard bottom-aligned */}
             <div style={{ display: 'flex', gap: '28px', alignItems: 'flex-end' }}>
               <div
@@ -1474,31 +1440,16 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
                 display: 'flex',
                 gap: '28px',
                 width: '100%',
-                pointerEvents: state.phase === 'round-prep' ? 'none' : 'auto',
-                visibility: state.phase === 'round-prep' ? 'hidden' : 'visible',
+                pointerEvents: 'auto',
               }}
-              aria-hidden={state.phase === 'round-prep'}
             >
               {/* Deck column: GO DOWN */}
               <div style={{ width: 'var(--card-w)', flexShrink: 0 }}>
                 <button
                   type="button"
+                  className="table-action table-action--down"
                   disabled={!canGoDown}
                   onClick={openPrep}
-                  style={{
-                    width: '100%',
-                    padding: '10px 0',
-                    background: canGoDown ? 'var(--accent)' : 'var(--surface-2)',
-                    color: canGoDown ? '#1a1a1a' : 'var(--text-dim)',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '0.72rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.05em',
-                    textTransform: 'uppercase',
-                    cursor: canGoDown ? 'pointer' : 'default',
-                    transition: 'background 0.2s, color 0.2s',
-                  }}
                 >
                   GO DOWN
                 </button>
@@ -1508,27 +1459,43 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
               <div style={{ width: 'var(--card-w)', flexShrink: 0 }}>
                 <button
                   type="button"
+                  className="table-action table-action--buy"
                   disabled={!canBuy}
                   onClick={handleBuy}
-                  style={{
-                    width: '100%',
-                    padding: '10px 0',
-                    background: 'var(--danger)',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '0.72rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.05em',
-                    textTransform: 'uppercase',
-                    cursor: canBuy ? 'pointer' : 'default',
-                    animation: canBuy ? 'buy-pulse 1.4s ease-in-out infinite alternate' : 'none',
-                  }}
                 >
                   BUY IT!
                 </button>
               </div>
             </div>
+
+            {state.phase === 'round-prep' && (
+              <div
+                style={{
+                  marginTop: '-6px',
+                  textAlign: 'center',
+                  color: 'var(--text)',
+                  pointerEvents: 'none',
+                  lineHeight: 1.1,
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>
+                  Starting round {state.roundIndex + 1}...
+                </div>
+                {prepBeat === 'countdown' && (
+                  <div
+                    style={{
+                      fontSize: '2.4rem',
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      marginTop: '2px',
+                      color: 'var(--accent)',
+                    }}
+                  >
+                    {countdownLeft}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

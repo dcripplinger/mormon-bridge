@@ -403,6 +403,110 @@ describe('decideBuy', () => {
     expect(canBuyDiscard(state, 0)).toBe(true)
     expect(decideBuy(state, 0)).toBe(false)
   })
+
+  function wildBuyState(opts: {
+    hand: Card[]
+    roundIndex?: number
+    discarderHand?: Card[]
+    discarderDown?: boolean
+  }): GameState {
+    const wild = card('wildBuy', 'wild', 0)
+    const discarderHand = opts.discarderHand ?? [card('x', 'red', 1)]
+    return stubState({
+      hand: opts.hand,
+      roundIndex: opts.roundIndex ?? 0,
+      phase: 'buy-window',
+      currentPlayerIndex: 1,
+      discardPile: [wild],
+      lastDiscarderIndex: 1,
+      hasDrawnThisTurn: false,
+      players: [
+        player(0, opts.hand),
+        player(1, discarderHand, { hasGoneDown: opts.discarderDown ?? false }),
+        player(2, [card('y', 'yellow', 2)]),
+      ],
+    })
+  }
+
+  it('buys a wild before going down even with no partial set', () => {
+    const state = wildBuyState({
+      hand: [
+        card('a', 'red', 1),
+        card('b', 'yellow', 4),
+        card('c', 'green', 8),
+        card('d', 'black', 12),
+      ],
+    })
+    expect(decideBuy(state, 0)).toBe(true)
+  })
+
+  it('buys a wild that only fattens a contract already in hand', () => {
+    const state = wildBuyState({
+      hand: [
+        card('a', 'red', 5),
+        card('b', 'yellow', 5),
+        card('c', 'green', 5),
+        card('d', 'red', 9),
+        card('e', 'yellow', 9),
+        card('f', 'black', 9),
+      ],
+    })
+    expect(findBestGoDown(state.players[0].hand, 0)).not.toBeNull()
+    expect(decideBuy(state, 0)).toBe(true)
+  })
+
+  it('skips a wild once every meld slot already has one', () => {
+    const state = wildBuyState({
+      hand: [
+        card('w1', 'wild', 0),
+        card('w2', 'wild', 0),
+        card('a', 'red', 1),
+        card('b', 'yellow', 4),
+      ],
+    })
+    expect(decideBuy(state, 0)).toBe(false)
+  })
+
+  it('still buys a wild when a 3-meld round has an open slot', () => {
+    const state = wildBuyState({
+      roundIndex: 3,
+      hand: [
+        card('w1', 'wild', 0),
+        card('w2', 'wild', 0),
+        card('a', 'red', 1),
+        card('b', 'yellow', 4),
+      ],
+    })
+    expect(decideBuy(state, 0)).toBe(true)
+  })
+
+  it('skips a wild when a player ahead can go out and the wild does not make a down', () => {
+    const state = wildBuyState({
+      hand: [
+        card('a', 'red', 1),
+        card('b', 'yellow', 4),
+        card('c', 'green', 8),
+      ],
+      discarderDown: true,
+      discarderHand: [card('last', 'black', 3)],
+    })
+    expect(decideBuy(state, 0)).toBe(false)
+  })
+
+  it('buys a wild that completes the down even if a player ahead is short', () => {
+    const state = wildBuyState({
+      hand: [
+        card('a', 'red', 5),
+        card('b', 'yellow', 5),
+        card('d', 'red', 9),
+        card('e', 'yellow', 9),
+        card('f', 'black', 9),
+      ],
+      discarderDown: true,
+      discarderHand: [card('last', 'black', 3)],
+    })
+    expect(decideBuy(state, 0)).toBe(true)
+  })
 })
 
 describe('decideDraw', () => {
