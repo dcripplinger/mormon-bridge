@@ -1,12 +1,7 @@
 import type { Card } from './card'
 import { isWild } from './card'
-import { isValidGroup, isValidRun } from './rules'
-import { wildRepresentedRank } from './wild-rank'
-
-function wildRankInRange(cards: Card[]): boolean {
-  const rank = wildRepresentedRank(cards)
-  return rank == null || (rank >= 1 && rank <= 14)
-}
+import { isValidGroup } from './rules'
+import { isPositionedRun, wildRepresentedRank } from './wild-rank'
 
 export type MeldEnd = 'left' | 'right'
 
@@ -45,14 +40,9 @@ export function allowsWildDisplacement(
   return true
 }
 
-/** Naturals stay in ascending visual order, and the set is a legal run. */
+/** Naturals and the wild sit in rank order, and the set is a legal run. */
 function isOrderedRun(cards: Card[]): boolean {
-  if (!isValidRun(cards)) return false
-  const naturals = cards.filter((c) => !isWild(c))
-  for (let i = 1; i < naturals.length; i++) {
-    if (naturals[i].number <= naturals[i - 1].number) return false
-  }
-  return wildRankInRange(cards)
+  return isPositionedRun(cards)
 }
 
 /** Ends a card may be added to, without removing a wild. */
@@ -111,7 +101,7 @@ function replaceWild(cards: Card[], card: Card): MeldPlay | null {
   const next = cards.slice()
   const wild = next[wildIdx]
   next[wildIdx] = card
-  if (!isValidRun(next)) return null
+  if (!isPositionedRun(next)) return null
   return {
     cards: next,
     index: wildIdx,

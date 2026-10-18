@@ -398,6 +398,31 @@ describe('goDown', () => {
     expect(next.roundIndex).toBe(0)
     expect(next.phase).toBe('round-end')
   })
+
+  it('stores a gap wild in the rank it stands for', () => {
+    const run = [
+      card('b1', 'black', 1),
+      card('b2', 'black', 2),
+      card('b4', 'black', 4),
+      card('w', 'wild', 0),
+    ]
+    const group = [
+      card('r7', 'red', 7),
+      card('y7', 'yellow', 7),
+      card('g7', 'green', 7),
+    ]
+    const s = stubPlayState({
+      hand: [...run, ...group],
+      roundIndex: 1,
+    })
+    const next = goDown(s, [
+      run.map((c) => c.id),
+      group.map((c) => c.id),
+    ])
+    expect(next.lastError).toBeNull()
+    const laid = next.tableMetlds.find((m) => m.type === 'run')
+    expect(laid?.cards.map((c) => c.id)).toEqual(['b1', 'b2', 'w', 'b4'])
+  })
 })
 
 describe('extendMeld', () => {

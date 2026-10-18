@@ -1,7 +1,8 @@
 import type { Card } from './card'
 import { isWild } from './card'
 import { groupWildsOnLeft } from './meld-play'
-import { ROUND_REQUIREMENTS, isValidGroup, isValidRun } from './rules'
+import { ROUND_REQUIREMENTS, isValidGroup } from './rules'
+import { isPositionedRun, runOrderFits } from './wild-rank'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,66 +37,13 @@ export function createPrepSlots(roundIndex: number): PrepSlot[] {
 // ---------------------------------------------------------------------------
 
 /**
- * A valid ordered partial run satisfies all of these:
- * - At most 1 wild.
- * - All non-wild cards share the same color.
- * - Non-wild cards appear in the card array in strictly ascending number order
- *   (left-to-right = ascending, matching the visual fan layout).
- * - Non-wild numbers, when sorted, form a consecutive sequence or have exactly
- *   one gap of 2 (which the single wild fills).
- * - Wild at the left end does not represent a number < 1.
- * - Wild at the right end does not represent a number > 14.
- *
+ * A partial run is valid when its left-to-right order is the rank order.
+ * The wild's slot is the number it stands for. A gap is filled only when
+ * the wild sits in that missing rank, and an end wild declares that end.
  * No minimum length is required (any length including 0 is accepted).
  */
 function isValidPartialRun(cards: Card[]): boolean {
-  if (cards.length === 0) return true
-
-  const naturals = cards.filter((c) => !isWild(c))
-  const wildCount = cards.length - naturals.length
-
-  if (wildCount > 1) return false
-  if (naturals.length === 0) return true // a lone wild is a valid start
-
-  // Non-wild cards must appear in strictly ascending order in the visual array.
-  let prev = -Infinity
-  for (const card of cards) {
-    if (isWild(card)) continue
-    if (card.number <= prev) return false
-    prev = card.number
-  }
-
-  // All non-wild cards must share the same color.
-  const color = naturals[0].color
-  if (!naturals.every((c) => c.color === color)) return false
-
-  // Gap check on sorted natural numbers.
-  const nums = naturals.map((c) => c.number).sort((a, b) => a - b)
-  let gaps = 0
-  for (let i = 1; i < nums.length; i++) {
-    const diff = nums[i] - nums[i - 1]
-    if (diff === 1) continue
-    if (diff === 2) {
-      gaps++
-      continue
-    }
-    return false // gap too large to bridge with one wild
-  }
-  if (gaps > 1) return false
-  if (gaps === 1 && wildCount === 0) return false // gap but no wild to fill it
-
-  // Bounds: wild at left end would represent nums[0]-1; that must be ≥ 1.
-  // Wild at right end would represent nums[last]+1; that must be ≤ 14.
-  if (wildCount === 1) {
-    if (isWild(cards[0])) {
-      if (nums[0] - 1 < 1) return false
-    } else if (isWild(cards[cards.length - 1])) {
-      if (nums[nums.length - 1] + 1 > 14) return false
-    }
-    // Wild in the middle fills a gap between two naturals; always in-bounds.
-  }
-
-  return true
+  return runOrderFits(cards)
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +149,7 @@ export function removeCard(
 export function isSlotComplete(slot: PrepSlot): boolean {
   return slot.type === 'group'
     ? isValidGroup(slot.cards)
-    : isValidRun(slot.cards)
+    : isPositionedRun(slot.cards)
 }
 
 /** True when every slot is complete — the Submit button may be enabled. */

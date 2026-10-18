@@ -36,6 +36,15 @@ describe('planMeldPlay', () => {
     expect(plan?.displacedWild?.id).toBe('w')
   })
 
+  it('replaces a low-end wild only with the rank that end declares', () => {
+    const low = [wild(), c('a', 'black', 2), c('b', 'black', 3), c('d', 'black', 4)]
+    const replaced = planMeldPlay(low, 'run', c('e', 'black', 1))
+    expect(replaced?.displacedWild?.id).toBe('w')
+    expect(replaced?.cards.map((card) => card.id)).toEqual(['e', 'a', 'b', 'd'])
+    expect(planMeldPlay(low, 'run', c('f', 'black', 5))?.displacedWild).toBeNull()
+    expect(planMeldPlay(low, 'run', c('f', 'black', 5))?.index).toBe(4)
+  })
+
   it('extends past a wild instead of replacing when the rank differs', () => {
     const ended = [c('a', 'red', 5), c('b', 'red', 6), c('c', 'red', 7), wild()]
     const plan = planMeldPlay(ended, 'run', c('d', 'red', 9))

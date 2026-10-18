@@ -1,6 +1,6 @@
 import type { Card } from './card'
 import { isWild } from './card'
-import { wildRepresentedRank } from './wild-rank'
+import { isPositionedRun, wildRepresentedRank } from './wild-rank'
 
 /** Round requirements: index 0 = round 1 */
 export const ROUND_REQUIREMENTS: ReadonlyArray<{ groups: number; runs: number }> = [
@@ -82,7 +82,12 @@ export function canExtendMeld(
   meldType: 'group' | 'run',
 ): boolean {
   if (meldType === 'group') return isValidGroup([...meldCards, cardToAdd])
-  if (isValidRun([cardToAdd, ...meldCards]) || isValidRun([...meldCards, cardToAdd])) return true
+  if (
+    isPositionedRun([cardToAdd, ...meldCards]) ||
+    isPositionedRun([...meldCards, cardToAdd])
+  ) {
+    return true
+  }
   if (isWild(cardToAdd)) return false
   const wildIdx = meldCards.findIndex(isWild)
   if (wildIdx < 0) return false
@@ -91,5 +96,5 @@ export function canExtendMeld(
   if (rank == null || rank !== cardToAdd.number) return false
   const replaced = meldCards.slice()
   replaced[wildIdx] = cardToAdd
-  return isValidRun(replaced)
+  return isPositionedRun(replaced)
 }

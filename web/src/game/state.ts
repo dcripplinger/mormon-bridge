@@ -11,6 +11,7 @@ import {
   type WildRules,
 } from './meld-play'
 import { ROUND_REQUIREMENTS, TOTAL_ROUNDS, isValidGroup, isValidRun, scoreHand } from './rules'
+import { arrangeRun, isPositionedRun } from './wild-rank'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -411,12 +412,19 @@ export function goDown(state: GameState, melds: string[][]): GameState {
 
   // Build new melds and update state
   let counter = state.meldIdCounter
-  const newMelds: Meld[] = resolved.map((m) => ({
-    id: `meld_${counter++}`,
-    ownerIndex: state.currentPlayerIndex,
-    type: m.type,
-    cards: m.type === 'group' ? groupWildsOnLeft(m.cards) : m.cards,
-  }))
+  const newMelds: Meld[] = []
+  for (const m of resolved) {
+    const cards = m.type === 'group' ? groupWildsOnLeft(m.cards) : arrangeRun(m.cards)
+    if (m.type === 'run' && !isPositionedRun(cards)) {
+      return err(state, 'One or more groups or runs are invalid')
+    }
+    newMelds.push({
+      id: `meld_${counter++}`,
+      ownerIndex: state.currentPlayerIndex,
+      type: m.type,
+      cards,
+    })
+  }
 
   const players = state.players.map((p) =>
     p.index === state.currentPlayerIndex

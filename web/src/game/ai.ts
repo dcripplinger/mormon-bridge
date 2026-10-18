@@ -20,6 +20,7 @@ import {
   wildDestinations,
   type WildRules,
 } from './meld-play'
+import { arrangeRun, isPositionedRun } from './wild-rank'
 import type { GameState, Meld } from './state'
 import {
   canBuyDiscard,
@@ -177,8 +178,9 @@ export function findRunCandidates(hand: Card[]): CandidateMeld[] {
   const seen = new Set<string>()
 
   const add = (cards: Card[]) => {
-    if (!isValidRun(cards)) return
-    const key = cards
+    const ordered = arrangeRun(cards)
+    if (!isValidRun(ordered) || !isPositionedRun(ordered)) return
+    const key = ordered
       .map((c) => c.id)
       .sort()
       .join('|')
@@ -186,8 +188,8 @@ export function findRunCandidates(hand: Card[]): CandidateMeld[] {
     seen.add(key)
     results.push({
       type: 'run',
-      cards,
-      ids: new Set(cards.map((c) => c.id)),
+      cards: ordered,
+      ids: new Set(ordered.map((c) => c.id)),
     })
   }
 
@@ -224,8 +226,9 @@ export function findRunCandidates(hand: Card[]): CandidateMeld[] {
           }
         }
 
-        // Wild as low end: naturals cover [lo,hi] contiguous, wild is lo-1
-        if (missing === 0 && spanLen >= 3 && lo > 1 && wilds.length > 0) {
+        // Wild as high end. Registered before the low end so a span that
+        // can use either end keeps the high declaration when the card set matches.
+        if (missing === 0 && spanLen >= 3 && hi < 14 && wilds.length > 0) {
           const pools = spanNums.map((n) => byNum.get(n)!)
           for (const wild of wilds) {
             for (const picks of pickOneFromEach(pools)) {
@@ -234,12 +237,12 @@ export function findRunCandidates(hand: Card[]): CandidateMeld[] {
           }
         }
 
-        // Wild as high end: same
-        if (missing === 0 && spanLen >= 3 && hi < 14 && wilds.length > 0) {
+        // Wild as low end: naturals cover [lo,hi] contiguous, wild is lo-1
+        if (missing === 0 && spanLen >= 3 && lo > 1 && wilds.length > 0) {
           const pools = spanNums.map((n) => byNum.get(n)!)
           for (const wild of wilds) {
             for (const picks of pickOneFromEach(pools)) {
-              add([...picks, wild])
+              add([wild, ...picks])
             }
           }
         }
@@ -680,7 +683,14 @@ export function decidePlay(
           afterSize: meld.cards.length + 1,
         },
       })
-      meld.cards = [...meld.cards, card]
+      const plan = planMeldPlay(
+        meld.cards,
+        meld.type,
+        card,
+        step.side,
+        allowsWildDisplacement(rules, meld.type),
+      )
+      if (plan) meld.cards = plan.cards
     }
     if (ext.length === 0) {
       aiLog({
