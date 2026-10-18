@@ -27,7 +27,7 @@ function makeGame(numHumans = 3, numAI = 0) {
       avatarId: `${isAI ? 'b' : 'h'}${String(n).padStart(2, '0')}`,
     }
   })
-  return createGame(setups)
+  return createGame(setups, { roundLeaderIndex: 0 })
 }
 
 /** Prep check-in, then the opening discard, so tests begin in the buy window. */
@@ -61,8 +61,9 @@ function stubPlayState(opts: {
   hasGoneDown?: boolean
   tableMetlds?: Meld[]
   roundIndex?: number
+  roundLeaderIndex?: number
 }): GameState {
-  const { hand, hasGoneDown = false, tableMetlds = [], roundIndex = 0 } = opts
+  const { hand, hasGoneDown = false, tableMetlds = [], roundIndex = 0, roundLeaderIndex = 0 } = opts
   return {
     players: [
       player(0, hand, { hasGoneDown }),
@@ -82,6 +83,7 @@ function stubPlayState(opts: {
     pendingWild: null,
     roundVictorIndex: null,
     ready: [false, false, false],
+    roundLeaderIndex,
     meldIdCounter: tableMetlds.length,
     lastError: null,
   }
@@ -134,8 +136,41 @@ describe('createGame', () => {
       { displayName: 'Bot 1', isAI: true, avatarId: 'b01' },
       { displayName: 'Bot 2', isAI: true, avatarId: 'b02' },
     ])
-    expect(state.players.map((p) => p.avatarId)).toEqual(['h03', 'b01', 'b02'])
-    expect(state.players.map((p) => p.isAI)).toEqual([false, true, true])
+    expect(state.players[0]).toMatchObject({ avatarId: 'h03', isAI: false, index: 0 })
+    expect(state.players.slice(1).map((p) => p.avatarId).sort()).toEqual(['b01', 'b02'])
+    expect(state.players.slice(1).every((p) => p.isAI)).toBe(true)
+  })
+
+  it('shuffles opponent seats once and keeps that order', () => {
+    const setups = [
+      { displayName: 'You', isAI: false, avatarId: 'h01' },
+      { displayName: 'Bot 1', isAI: true, avatarId: 'b01' },
+      { displayName: 'Bot 2', isAI: true, avatarId: 'b02' },
+      { displayName: 'Bot 3', isAI: true, avatarId: 'b03' },
+    ]
+    let call = 0
+    const rolls = [0, 0]
+    const state = createGame(setups, {
+      rng: () => rolls[call++] ?? 0,
+      roundLeaderIndex: 1,
+    })
+    expect(state.players.map((p) => p.displayName)).toEqual(['You', 'Bot 2', 'Bot 3', 'Bot 1'])
+    expect(state.players.map((p) => p.index)).toEqual([0, 1, 2, 3])
+    const next = continueAfterRound({ ...state, phase: 'round-end' })
+    expect(next.players.map((p) => p.displayName)).toEqual(['You', 'Bot 2', 'Bot 3', 'Bot 1'])
+    expect(next.roundLeaderIndex).toBe(2)
+  })
+
+  it('chooses the round-1 leader from the rng', () => {
+    const setups = [
+      { displayName: 'P1', isAI: false, avatarId: 'h01' },
+      { displayName: 'P2', isAI: true, avatarId: 'b01' },
+      { displayName: 'P3', isAI: true, avatarId: 'b02' },
+      { displayName: 'P4', isAI: true, avatarId: 'b03' },
+    ]
+    const state = createGame(setups, { rng: () => 0.99 })
+    expect(state.roundLeaderIndex).toBe(3)
+    expect(state.currentPlayerIndex).toBe(3)
   })
 })
 
@@ -351,9 +386,22 @@ describe('discard', () => {
     expect(dealt.roundIndex).toBe(1)
     expect(dealt.phase).toBe('round-prep')
     expect(dealt.discardPile).toHaveLength(0)
+    expect(dealt.roundLeaderIndex).toBe(1)
+    expect(dealt.currentPlayerIndex).toBe(1)
     expect(next.players[0].roundScores).toEqual([0])
     expect(next.players[0].cumulativeScore).toBe(0)
     expect(next.players[1].roundScores).toHaveLength(1)
+  })
+
+  it('rotates the next round leader clockwise, wrapping past the last seat', () => {
+    const s = stubPlayState({
+      hand: [card('last', 'red', 9)],
+      hasGoneDown: true,
+      roundLeaderIndex: 2,
+    })
+    const dealt = continueAfterRound(discard(s, 'last'))
+    expect(dealt.roundLeaderIndex).toBe(0)
+    expect(dealt.currentPlayerIndex).toBe(0)
   })
 })
 

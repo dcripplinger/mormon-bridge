@@ -89,6 +89,12 @@ export interface GameState {
   roundVictorIndex: number | null
   /** Per seat, true once that player has checked in during round-prep. */
   ready: boolean[]
+  /**
+   * Who leads this round. Chosen at random for round 1, then one seat
+   * clockwise (increasing index) each later round. Stays fixed while play
+   * moves `currentPlayerIndex`.
+   */
+  roundLeaderIndex: number
   meldIdCounter: number
   // Transient: last error message for the UI to surface, cleared on next action
   lastError: string | null
@@ -98,7 +104,10 @@ export interface GameState {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createGame(setups: PlayerSetup[]): GameState {
+export function createGame(
+  setups: PlayerSetup[],
+  options: { rng?: () => number; roundLeaderIndex?: number } = {},
+): GameState {
   const numPlayers = setups.length
   if (numPlayers < 3 || numPlayers > 5) {
     throw new Error('Mormon Bridge requires 3-5 players')
@@ -113,15 +122,59 @@ export function createGame(setups: PlayerSetup[]): GameState {
     cumulativeScore: 0,
     roundScores: [],
   }))
-  return startRound({ players, roundIndex: 0, meldIdCounter: 0 })
+  const rng = options.rng ?? Math.random
+  const seated = shuffleSeatOrder(players, rng)
+  const rolled = options.roundLeaderIndex ?? pickRoundLeader(numPlayers, rng)
+  const roundLeaderIndex = normalizeLeader(rolled, numPlayers)
+  return startRound({ players: seated, roundIndex: 0, meldIdCounter: 0, roundLeaderIndex })
+}
+
+/**
+ * Randomize clockwise seat order once per game. The human stays at index 0
+ * (bottom of the table); everyone else is shuffled around them. Later rounds
+ * reuse these same seats.
+ */
+function shuffleSeatOrder(players: PlayerState[], rng: () => number): PlayerState[] {
+  const humanIndex = players.findIndex((p) => !p.isAI)
+  if (humanIndex === -1) {
+    return reindex(shuffleArray(players, rng))
+  }
+  const others = players.filter((_, i) => i !== humanIndex)
+  return reindex([players[humanIndex], ...shuffleArray(others, rng)])
+}
+
+function reindex(players: PlayerState[]): PlayerState[] {
+  return players.map((p, i) => ({ ...p, index: i }))
+}
+
+function shuffleArray<T>(items: T[], rng: () => number): T[] {
+  const arr = [...items]
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    const swap = arr[i]
+    arr[i] = arr[j]
+    arr[j] = swap
+  }
+  return arr
+}
+
+/** Uniform seat in [0, playerCount). */
+function pickRoundLeader(playerCount: number, rng: () => number = Math.random): number {
+  return Math.floor(rng() * playerCount)
+}
+
+function normalizeLeader(index: number, playerCount: number): number {
+  if (!Number.isInteger(index) || index < 0 || index >= playerCount) return 0
+  return index
 }
 
 function startRound(opts: {
   players: PlayerState[]
   roundIndex: number
   meldIdCounter: number
+  roundLeaderIndex: number
 }): GameState {
-  const { roundIndex, meldIdCounter } = opts
+  const { roundIndex, meldIdCounter, roundLeaderIndex } = opts
   const raw = buildDeck()
   const shuffled = shuffleDeck(raw)
   const { hands, drawPile } = dealHands(shuffled, opts.players.length)
@@ -140,7 +193,7 @@ function startRound(opts: {
     discardPile: [],
     tableMetlds: [],
     roundIndex,
-    currentPlayerIndex: 0,
+    currentPlayerIndex: roundLeaderIndex,
     phase: 'round-prep',
     hasDrawnThisTurn: false,
     lastDiscarderIndex: null,
@@ -149,6 +202,7 @@ function startRound(opts: {
     pendingWild: null,
     roundVictorIndex: null,
     ready: players.map(() => false),
+    roundLeaderIndex,
     meldIdCounter,
     lastError: null,
   }
@@ -665,9 +719,12 @@ export function continueAfterRound(state: GameState): GameState {
   if (nextRound >= TOTAL_ROUNDS) {
     return { ...state, phase: 'game-end', roundVictorIndex: null, lastError: null }
   }
+  const playerCount = state.players.length
+  const roundLeaderIndex = (state.roundLeaderIndex + 1) % playerCount
   return startRound({
     players: state.players,
     roundIndex: nextRound,
     meldIdCounter: state.meldIdCounter,
+    roundLeaderIndex,
   })
 }

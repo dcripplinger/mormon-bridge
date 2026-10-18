@@ -93,6 +93,7 @@ function stubState(opts: {
     pendingWild: null,
     roundVictorIndex: null,
     ready: players.map(() => false),
+    roundLeaderIndex: currentPlayerIndex,
     meldIdCounter: tableMetlds.length,
     lastError: null,
   }

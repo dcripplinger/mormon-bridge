@@ -82,6 +82,7 @@ function stubGameState(): GameState {
     pendingWild: null,
     roundVictorIndex: null,
     ready: [false],
+    roundLeaderIndex: 0,
     meldIdCounter: 0,
     lastError: null,
   }
@@ -218,6 +219,14 @@ describe('active game', () => {
     await saveActiveGame(gs)
     const loaded = await loadActiveGame()
     expect(loaded?.players.map((p) => p.isAI)).toEqual([false, true, true])
+  })
+
+  it('defaults a missing round leader to seat 0', async () => {
+    const payload = { version: 1, state: stubGameState() }
+    delete (payload.state as { roundLeaderIndex?: number }).roundLeaderIndex
+    store.set('mb:active-game', JSON.stringify(payload))
+    const loaded = await loadActiveGame()
+    expect(loaded?.roundLeaderIndex).toBe(0)
   })
 
   it('rejects a mismatched schema version', async () => {

@@ -124,6 +124,7 @@ describe('pair-flood readiness (round 1)', () => {
       pendingWild: null,
       roundVictorIndex: null,
       ready: [false, false, false],
+      roundLeaderIndex: 0,
       meldIdCounter: 0,
       lastError: null,
     }
