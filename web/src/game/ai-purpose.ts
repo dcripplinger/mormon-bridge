@@ -377,6 +377,63 @@ function chooseIndexes(n: number, k: number): number[][] {
   return out
 }
 
+/**
+ * Attach a wild in priority order:
+ * 1) incomplete primary (readiness)
+ * 2) incomplete backup (versatility)
+ * 3) wild-less filled primary (overplay)
+ * 4) wild-less filled backup (overplay)
+ * Returns true if attached to a collection.
+ */
+function attachWildToCollections(
+  wild: Card,
+  primaryGroups: GroupCollection[],
+  primaryRuns: RunCluster[],
+  backupGroups: GroupCollection[],
+  backupRuns: RunCluster[],
+  used: Set<string>,
+): boolean {
+  const tryGroup = (
+    groups: GroupCollection[],
+    onlyIncomplete: boolean,
+  ): boolean => {
+    for (const g of groups) {
+      if (g.wild) continue
+      const complete = groupNaturalCount(g) >= GROUP_MIN_CARDS
+      if (onlyIncomplete ? complete : !complete) continue
+      g.wild = wild
+      used.add(wild.id)
+      return true
+    }
+    return false
+  }
+
+  const tryRun = (
+    runs: RunCluster[],
+    onlyIncomplete: boolean,
+  ): boolean => {
+    for (const r of runs) {
+      if (r.wild) continue
+      const complete = runEffectiveSize(r) >= RUN_MIN_CARDS
+      if (onlyIncomplete ? complete : !complete) continue
+      r.wild = wild
+      used.add(wild.id)
+      return true
+    }
+    return false
+  }
+
+  if (tryGroup(primaryGroups, true)) return true
+  if (tryRun(primaryRuns, true)) return true
+  if (tryGroup(backupGroups, true)) return true
+  if (tryRun(backupRuns, true)) return true
+  if (tryGroup(primaryGroups, false)) return true
+  if (tryRun(primaryRuns, false)) return true
+  if (tryGroup(backupGroups, false)) return true
+  if (tryRun(backupRuns, false)) return true
+  return false
+}
+
 export function assignPurposes(hand: Card[], roundIndex: number): Assignment {
   const req = ROUND_REQUIREMENTS[roundIndex]
   const groups = buildGroupCollections(hand)
@@ -482,22 +539,17 @@ export function assignPurposes(hand: Card[], roundIndex: number): Assignment {
 
       const freeWilds = wilds.filter((w) => !used.has(w.id))
       for (const w of freeWilds) {
-        let attached = false
-        for (const g of primaryGroups) {
-          if (g.wild) continue
-          if (groupNaturalCount(g) >= GROUP_MIN_CARDS) continue
-          g.wild = w
+        const attached = attachWildToCollections(
+          w,
+          primaryGroups,
+          primaryRuns,
+          backupGroups,
+          backupRuns,
+          used,
+        )
+        if (!attached) {
+          // Latent flex: still purposeful even with nowhere to stick
           used.add(w.id)
-          attached = true
-          break
-        }
-        if (attached) continue
-        for (const r of primaryRuns) {
-          if (r.wild) continue
-          if (runEffectiveSize(r) >= RUN_MIN_CARDS) continue
-          r.wild = w
-          used.add(w.id)
-          break
         }
       }
 
@@ -547,7 +599,12 @@ export function scorePurposePlan(
     const denom = Math.max(1, hand.length)
     let overplay = 0
     const conditionalIds = new Set<string>()
+    const purposefulIds = new Set<string>([...playable, ...near])
     for (const c of hand) {
+      if (isWild(c)) {
+        purposefulIds.add(c.id)
+        continue
+      }
       if (playable.has(c.id)) overplay += 1 / denom
       else if (near.has(c.id)) {
         overplay += CONDITIONAL_OVERPLAY / denom
@@ -559,8 +616,11 @@ export function scorePurposePlan(
       primaryRuns: [],
       backupGroups: [],
       backupRuns: [],
-      throwaway: hand.filter((c) => !playable.has(c.id) && !near.has(c.id)),
-      purposefulIds: new Set([...playable, ...near]),
+      // Wilds are never throwaway (layoff / displacement inventory).
+      throwaway: hand.filter(
+        (c) => !isWild(c) && !playable.has(c.id) && !near.has(c.id),
+      ),
+      purposefulIds,
       conditionalIds,
       readiness: readinessRequired,
       readinessRequired,
@@ -627,7 +687,13 @@ export function scorePurposePlan(
   }
 
   const purposefulIds = new Set<string>(assignment.usedIds)
-  const throwaway = hand.filter((c) => !purposefulIds.has(c.id))
+  for (const c of hand) {
+    if (isWild(c)) purposefulIds.add(c.id)
+  }
+  // Wilds are never throwaway; they are overplay, readiness fill, or latent flex.
+  const throwaway = hand.filter(
+    (c) => !isWild(c) && !purposefulIds.has(c.id),
+  )
   const readinessNorm =
     readinessRequired === 0 ? 1 : Math.min(1, readiness / readinessRequired)
 

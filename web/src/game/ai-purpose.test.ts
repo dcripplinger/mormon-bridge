@@ -147,3 +147,39 @@ describe('buildRunClusters', () => {
     expect(clusters.length).toBeGreaterThanOrEqual(2)
   })
 })
+
+describe('wild purpose / overplay', () => {
+  it('attaches wild as overplay on complete primary, never throwaway', () => {
+    const hand = [
+      card('w', 'wild', 0),
+      card('a', 'red', 5),
+      card('b', 'yellow', 5),
+      card('c', 'green', 5),
+      card('d', 'red', 9),
+      card('e', 'yellow', 9),
+      card('f', 'black', 9),
+      card('dead', 'black', 1),
+    ]
+    const scores = scorePurposePlan(hand, [], 0, false, true)
+    expect(scores.plan.purposefulIds.has('w')).toBe(true)
+    expect(scores.plan.throwaway.some((c) => c.id === 'w')).toBe(false)
+    expect(scores.overplay).toBeGreaterThan(0)
+    const attached =
+      scores.plan.primaryGroups.some((g) => g.wild?.id === 'w') ||
+      scores.plan.primaryRuns.some((r) => r.wild?.id === 'w') ||
+      scores.plan.backupGroups.some((g) => g.wild?.id === 'w') ||
+      scores.plan.backupRuns.some((r) => r.wild?.id === 'w')
+    expect(attached).toBe(true)
+  })
+
+  it('keeps lone wild purposeful (latent) with no collections', () => {
+    const hand = [
+      card('w', 'wild', 0),
+      card('a', 'red', 1),
+      card('b', 'yellow', 4),
+    ]
+    const scores = scorePurposePlan(hand, [], 0, false, false)
+    expect(scores.plan.purposefulIds.has('w')).toBe(true)
+    expect(scores.plan.throwaway.some((c) => c.id === 'w')).toBe(false)
+  })
+})

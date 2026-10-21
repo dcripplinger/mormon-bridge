@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Card } from './card'
+import { isWild } from './card'
 import {
   decideBuy,
   decideDraw,
@@ -7,6 +8,7 @@ import {
   findBestGoDown,
   findNearExtendIds,
   findTablePlayable,
+  hasSafeDiscard,
   isNearExtendForRun,
   planExtensions,
   pickDiscardCard,
@@ -229,6 +231,12 @@ describe('planExtensions', () => {
 })
 
 describe('discard ranking', () => {
+  const ctx0 = {
+    tableMelds: [] as Meld[],
+    roundIndex: 0,
+    hasGoneDown: false,
+  }
+
   it('prefers dead 10-pt card over useful 5-pt card', () => {
     const hand = [
       card('keep', 'red', 5),
@@ -239,7 +247,7 @@ describe('discard ranking', () => {
     // Round 1 needs 2 groups — 5s are a near-group
     const eval_ = evaluateHand(hand, [], 0, false)
     expect(eval_.usefulIds.has('keep')).toBe(true)
-    const picked = pickDiscardCard(hand, eval_, rng0)
+    const picked = pickDiscardCard(hand, eval_, ctx0, rng0)
     expect(picked.id).toBe('dead')
   })
 
@@ -255,12 +263,101 @@ describe('discard ranking', () => {
         card('r8', 'red', 8),
       ],
     }
+    // Pairs fill both primary group slots so black 12 stays a true throwaway.
     const hand = [
       card('r9', 'red', 9),
       card('dead', 'black', 12),
+      card('p1', 'green', 5),
+      card('p2', 'yellow', 5),
+      card('p3', 'green', 3),
+      card('p4', 'yellow', 3),
     ]
     const eval_ = evaluateHand(hand, [runMeld], 0, false)
-    const picked = pickDiscardCard(hand, eval_, rng0)
+    expect(eval_.tablePlayableIds.has('r9')).toBe(true)
+    expect(eval_.purpose.throwaway.some((c) => c.id === 'dead')).toBe(true)
+    const picked = pickDiscardCard(
+      hand,
+      eval_,
+      { tableMelds: [runMeld], roundIndex: 0, hasGoneDown: false },
+      rng0,
+    )
+    expect(picked.id).toBe('dead')
+  })
+
+  it('never discards a wild when a non-wild exists', () => {
+    const hand = [
+      card('w', 'wild', 0),
+      card('dead', 'black', 12),
+      card('a', 'red', 5),
+      card('b', 'yellow', 5),
+      card('c', 'green', 5),
+    ]
+    const eval_ = evaluateHand(hand, [], 0, false)
+    expect(eval_.purpose.throwaway.some((c) => c.id === 'w')).toBe(false)
+    const picked = pickDiscardCard(hand, eval_, ctx0, rng0)
+    expect(picked.id).toBe('dead')
+  })
+
+  it('keeps wild as overplay on complete primary, discards dead singleton', () => {
+    const hand = [
+      card('w', 'wild', 0),
+      card('a', 'red', 5),
+      card('b', 'yellow', 5),
+      card('c', 'green', 5),
+      card('d', 'red', 9),
+      card('e', 'yellow', 9),
+      card('f', 'black', 9),
+      card('dead', 'black', 1),
+    ]
+    const eval_ = evaluateHand(hand, [], 0, false)
+    expect(eval_.purpose.purposefulIds.has('w')).toBe(true)
+    expect(eval_.purpose.throwaway.some((c) => isWild(c))).toBe(false)
+    const picked = pickDiscardCard(hand, eval_, ctx0, rng0)
+    expect(picked.id).toBe('dead')
+  })
+
+  it('prefers unplayable throwaway over playable', () => {
+    const runMeld: Meld = {
+      id: 'm1',
+      ownerIndex: 1,
+      type: 'run',
+      cards: [
+        card('r5', 'red', 5),
+        card('r6', 'red', 6),
+        card('r7', 'red', 7),
+        card('r8', 'red', 8),
+      ],
+    }
+    const hand = [
+      card('r9', 'red', 9),
+      card('dead', 'black', 3),
+      card('pair1', 'green', 5),
+      card('pair2', 'yellow', 5),
+    ]
+    const eval_ = evaluateHand(hand, [runMeld], 0, false)
+    expect(eval_.tablePlayableIds.has('r9')).toBe(true)
+    const picked = pickDiscardCard(
+      hand,
+      eval_,
+      { tableMelds: [runMeld], roundIndex: 0, hasGoneDown: false },
+      rng0,
+    )
+    expect(picked.id).toBe('dead')
+  })
+
+  it('post-down never discards wild over dead natural', () => {
+    const hand = [
+      card('w', 'wild', 0),
+      card('dead', 'black', 12),
+    ]
+    const eval_ = evaluateHand(hand, [], 0, true)
+    expect(eval_.purpose.throwaway.some((c) => c.id === 'w')).toBe(false)
+    const picked = pickDiscardCard(
+      hand,
+      eval_,
+      { tableMelds: [], roundIndex: 0, hasGoneDown: true },
+      rng0,
+    )
     expect(picked.id).toBe('dead')
   })
 })
@@ -361,6 +458,61 @@ describe('decideBuy', () => {
       hasDrawnThisTurn: false,
       players: [
         player(0, hand),
+        player(1, [card('x', 'red', 1)]),
+        player(2, [card('y', 'yellow', 2)]),
+      ],
+    })
+    expect(decideBuy(state, 0)).toBe(false)
+  })
+
+  it('buys junk pre-down when hand has no safe discard (wiggle room)', () => {
+    // Two pairs only — every natural is readiness; no throwaway/backup/overplay.
+    const hand = [
+      card('a', 'red', 5),
+      card('b', 'yellow', 5),
+      card('c', 'red', 9),
+      card('d', 'yellow', 9),
+    ]
+    const eval_ = evaluateHand(hand, [], 0, false)
+    expect(hasSafeDiscard(hand, eval_, {
+      tableMelds: [],
+      roundIndex: 0,
+      hasGoneDown: false,
+    })).toBe(false)
+
+    const state = stubState({
+      hand,
+      phase: 'buy-window',
+      currentPlayerIndex: 1,
+      discardPile: [card('junk', 'black', 11)],
+      lastDiscarderIndex: 1,
+      hasDrawnThisTurn: false,
+      players: [
+        player(0, hand),
+        player(1, [card('x', 'red', 1)]),
+        player(2, [card('y', 'yellow', 2)]),
+      ],
+    })
+    expect(decideBuy(state, 0)).toBe(true)
+  })
+
+  it('post-down still never buys even with a locked-looking hand', () => {
+    const hand = [
+      card('a', 'red', 5),
+      card('b', 'yellow', 5),
+      card('c', 'red', 9),
+      card('d', 'yellow', 9),
+    ]
+    const state = stubState({
+      hand,
+      hasGoneDown: true,
+      phase: 'buy-window',
+      currentPlayerIndex: 1,
+      discardPile: [card('junk', 'black', 11)],
+      lastDiscarderIndex: 1,
+      hasDrawnThisTurn: false,
+      players: [
+        player(0, hand, { hasGoneDown: true }),
         player(1, [card('x', 'red', 1)]),
         player(2, [card('y', 'yellow', 2)]),
       ],

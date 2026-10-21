@@ -466,49 +466,166 @@ export function evaluateHand(
 }
 
 // ---------------------------------------------------------------------------
-// Discard ranking
+// Discard ranking (tier ladder)
 // ---------------------------------------------------------------------------
 
-/**
- * Rank a card for discard: higher = more willing to discard.
- * Prefer throwaway / non-purpose cards, then not table-playable, then high points.
- */
-export function discardScore(
-  card: Card,
-  eval_: HandEval,
-  rng: Rng,
-): number {
-  let score = 0
-  const isThrowaway = eval_.purpose.throwaway.some((c) => c.id === card.id)
-  const isConditional = eval_.purpose.conditionalIds.has(card.id)
-  if (isThrowaway) score += 1000
-  if (!eval_.usefulIds.has(card.id) && !eval_.planCardIds.has(card.id)) {
-    score += 400
-  }
-  if (!isConditional) score += 80
-  if (!eval_.tablePlayableIds.has(card.id)) score += 200
-  if (!eval_.nearExtendIds.has(card.id)) score += 50
-  if (!eval_.planCardIds.has(card.id)) score += 30
-  score += scoreCard(card)
-  score += rng() * 3
-  return score
+export type DiscardContext = {
+  tableMelds: Meld[]
+  roundIndex: number
+  hasGoneDown: boolean
 }
 
-export function pickDiscardCard(
+function purposeCollectionIds(
+  groups: { cards: Card[]; wild: Card | null }[],
+  runs: { core: Card[]; wings: Card[]; wild: Card | null }[],
+): Set<string> {
+  const ids = new Set<string>()
+  for (const g of groups) {
+    for (const c of g.cards) ids.add(c.id)
+    if (g.wild) ids.add(g.wild.id)
+  }
+  for (const r of runs) {
+    for (const c of r.core) ids.add(c.id)
+    for (const c of r.wings) ids.add(c.id)
+    if (r.wild) ids.add(r.wild.id)
+  }
+  return ids
+}
+
+/** Raw readiness without the can-go-down clamp, for discard impact. */
+function rawReadiness(
+  hand: Card[],
+  tableMelds: Meld[],
+  roundIndex: number,
+  hasGoneDown: boolean,
+): number {
+  return scorePurposePlan(hand, tableMelds, roundIndex, hasGoneDown, false).readiness
+}
+
+export function discardReducesReadiness(
+  hand: Card[],
+  card: Card,
+  ctx: DiscardContext,
+): boolean {
+  if (ctx.hasGoneDown) return false
+  const before = rawReadiness(hand, ctx.tableMelds, ctx.roundIndex, false)
+  const after = rawReadiness(
+    hand.filter((c) => c.id !== card.id),
+    ctx.tableMelds,
+    ctx.roundIndex,
+    false,
+  )
+  return after < before
+}
+
+/**
+ * Tier 1–3 candidates: unplayable, does not cut readiness.
+ * Used for buy wiggle-room lock detection (pre-down).
+ */
+export function hasSafeDiscard(
   hand: Card[],
   eval_: HandEval,
-  rng: Rng = Math.random,
-): Card {
-  let best = hand[0]
-  let bestScore = -Infinity
+  ctx: DiscardContext,
+): boolean {
   for (const card of hand) {
-    const s = discardScore(card, eval_, rng)
+    if (isWild(card)) continue
+    if (eval_.tablePlayableIds.has(card.id)) continue
+    if (discardReducesReadiness(hand, card, ctx)) continue
+    return true
+  }
+  return false
+}
+
+/** Discard tiers: lower = more willing. Wilds are never tiered (hard exclude). */
+export type DiscardTier = 1 | 2 | 3 | 4 | 5
+
+export function discardTier(
+  card: Card,
+  hand: Card[],
+  eval_: HandEval,
+  ctx: DiscardContext,
+): DiscardTier {
+  const playable = eval_.tablePlayableIds.has(card.id)
+  const throwaway = eval_.purpose.throwaway.some((c) => c.id === card.id)
+  const backupIds = purposeCollectionIds(
+    eval_.purpose.backupGroups,
+    eval_.purpose.backupRuns,
+  )
+  const primaryIds = purposeCollectionIds(
+    eval_.purpose.primaryGroups,
+    eval_.purpose.primaryRuns,
+  )
+  const cutsReady = discardReducesReadiness(hand, card, ctx)
+
+  if (ctx.hasGoneDown) {
+    // Post-down: throwaway → near (backup-like) → playable → other
+    if (!playable && throwaway) return 1
+    if (!playable && eval_.nearExtendIds.has(card.id)) return 2
+    if (playable) return 4
+    return 3
+  }
+
+  if (!playable && throwaway) return 1
+  if (!playable && backupIds.has(card.id)) return 2
+  if (!playable && primaryIds.has(card.id) && !cutsReady) return 3
+  if (playable) return 4
+  // Unplayable readiness / other purposeful — last resort after playable
+  return 5
+}
+
+function pickHighestPoints(cards: Card[], rng: Rng): Card {
+  let best = cards[0]
+  let bestScore = -Infinity
+  for (const card of cards) {
+    const s = scoreCard(card) + rng() * 0.01
     if (s > bestScore) {
       bestScore = s
       best = card
     }
   }
   return best
+}
+
+/**
+ * Discard ladder:
+ * 1) unplayable throwaway (high pts)
+ * 2) unplayable backup (high pts)
+ * 3) unplayable primary overplay (high pts)
+ * 4) playable (only when no safe unplayable non-readiness discard)
+ * 5) readiness-cutting unplayable
+ * Never discard a wild while any non-wild remains.
+ */
+export function pickDiscardCard(
+  hand: Card[],
+  eval_: HandEval,
+  ctx: DiscardContext,
+  rng: Rng = Math.random,
+): Card {
+  if (hand.length === 0) {
+    throw new Error('pickDiscardCard: empty hand')
+  }
+
+  const nonWilds = hand.filter((c) => !isWild(c))
+  if (nonWilds.length === 0) {
+    return pickHighestPoints(hand, rng)
+  }
+
+  const byTier = new Map<DiscardTier, Card[]>()
+  for (const card of nonWilds) {
+    const tier = discardTier(card, hand, eval_, ctx)
+    const list = byTier.get(tier) ?? []
+    list.push(card)
+    byTier.set(tier, list)
+  }
+
+  for (const tier of [1, 2, 3, 4, 5] as DiscardTier[]) {
+    const candidates = byTier.get(tier)
+    if (candidates && candidates.length > 0) {
+      return pickHighestPoints(candidates, rng)
+    }
+  }
+
+  return pickHighestPoints(nonWilds, rng)
 }
 
 // ---------------------------------------------------------------------------
@@ -705,17 +822,24 @@ export function decidePlay(
 
   if (hand.length > 0) {
     const eval_ = evaluateHand(hand, tableMelds, state.roundIndex, hasGoneDown)
-    const card = pickDiscardCard(hand, eval_, rng)
+    const discardCtx: DiscardContext = {
+      tableMelds,
+      roundIndex: state.roundIndex,
+      hasGoneDown,
+    }
+    const card = pickDiscardCard(hand, eval_, discardCtx, rng)
     steps.push({ type: 'discard', cardId: card.id })
 
-    const reasons: string[] = []
-    if (!eval_.usefulIds.has(card.id) && !eval_.planCardIds.has(card.id)) {
-      reasons.push('dead to plan')
-    }
+    const tier = isWild(card)
+      ? 'wild-forced'
+      : String(discardTier(card, hand, eval_, discardCtx))
+    const reasons: string[] = [`tier ${tier}`]
+    if (isWild(card)) reasons.push('ONLY wilds left')
     if (!eval_.tablePlayableIds.has(card.id)) reasons.push('not table-playable')
     else reasons.push('WARNING table-playable')
-    if (!eval_.nearExtendIds.has(card.id)) reasons.push('not near-extend')
-    else reasons.push('WARNING near-extend')
+    if (discardReducesReadiness(hand, card, discardCtx)) {
+      reasons.push('WARNING cuts readiness')
+    }
     reasons.push(`${scoreCard(card)} pts`)
 
     aiLog({
@@ -725,6 +849,7 @@ export function decidePlay(
       hand,
       target: card,
       details: {
+        tier,
         useful: [...eval_.usefulIds],
         tablePlayable: [...eval_.tablePlayableIds],
         nearExtend: [...eval_.nearExtendIds],
@@ -889,6 +1014,38 @@ export function decideBuy(state: GameState, buyerIndex: number): boolean {
     return false
   }
 
+  // Pre-down: no safe discard (unplayable + does not cut readiness) → buy a
+  // non-wild for wiggle room. A wild does not help: we never discard wilds.
+  const handEval = evaluateHand(
+    player.hand,
+    state.tableMetlds,
+    state.roundIndex,
+    false,
+  )
+  const discardCtx: DiscardContext = {
+    tableMelds: state.tableMetlds,
+    roundIndex: state.roundIndex,
+    hasGoneDown: false,
+  }
+  if (!hasSafeDiscard(player.hand, handEval, discardCtx) && !isWild(top)) {
+    aiLog({
+      playerLabel: label,
+      decision: 'buy',
+      reason: `Buy ${formatCardShort(top)}: hand locked (no safe discard); acquire wiggle room`,
+      hand: player.hand,
+      target: top,
+      details: {
+        acquireValue: Number(breakdown.value.toFixed(2)),
+        handSize: player.hand.length,
+        hasGoneDown: false,
+        lockedHand: true,
+        purposeBefore: breakdown.purposeSummaryBefore,
+        purposeAfter: breakdown.purposeSummaryAfter,
+      },
+    })
+    return true
+  }
+
   if (isWild(top)) {
     const wildBuy = evaluatePreDownWildBuy(state, buyerIndex, top)
     aiLog({
@@ -981,9 +1138,11 @@ function overplayAfterClaim(
   hasGoneDown: boolean,
 ): number {
   const withCard = [...hand, card]
+  const eval_ = evaluateHand(withCard, tableMelds, roundIndex, hasGoneDown)
   const thrown = pickDiscardCard(
     withCard,
-    evaluateHand(withCard, tableMelds, roundIndex, hasGoneDown),
+    eval_,
+    { tableMelds, roundIndex, hasGoneDown },
     () => 0,
   )
   const kept = withCard.filter((c) => c.id !== thrown.id)
