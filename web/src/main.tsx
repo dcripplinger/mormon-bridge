@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import GameScreen from './app/GameScreen'
 import MenuScreen from './app/MenuScreen'
+import OnlineSession from './app/OnlineSession'
 import {
   clearActiveGame,
   loadActiveGame,
@@ -19,6 +20,7 @@ function App() {
 
   // The game currently being played (null = on menu)
   const [gameState, setGameState] = useState<GameState | null>(null)
+  const [onlineOpen, setOnlineOpen] = useState(false)
 
   // The persisted game shown as "Continue" on the menu.
   // Updated in-place by a ref during play to avoid causing re-renders.
@@ -84,6 +86,16 @@ function App() {
 
   if (loading) return null
 
+  if (onlineOpen) {
+    return (
+      <OnlineSession
+        onBack={() => setOnlineOpen(false)}
+        settings={initialSettings ?? undefined}
+        defaultAvatarId={initialSeats?.[0]?.avatarId}
+      />
+    )
+  }
+
   if (gameState) {
     return (
       <GameScreen
@@ -104,6 +116,7 @@ function App() {
       onStart={handleStart}
       onContinue={handleContinue}
       onQuit={handleQuit}
+      onOnline={() => setOnlineOpen(true)}
     />
   )
 }

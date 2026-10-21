@@ -1,0 +1,16 @@
+{
+  "name": "mormon-bridge",
+  "private": true,
+  "workspaces": [
+    "web",
+    "shared",
+    "worker"
+  ],
+  "scripts": {
+    "test": "npm run test --workspace=web && npm run test --workspace=shared",
+    "dev:web": "npm run dev --workspace=web",
+    "dev:worker": "npm run dev --workspace=worker",
+    "build:web": "npm run build --workspace=web",
+    "deploy:worker": "npm run deploy --workspace=worker"
+  }
+}

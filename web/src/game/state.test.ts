@@ -238,9 +238,9 @@ describe('claimDiscardAsDraw', () => {
 describe('declareBuy', () => {
   it('records the caller without moving cards', () => {
     const base = openRound(3)
-    const s = declareBuy(base, 1)
+    const s = declareBuy(base, 1, 500)
     expect(s.lastError).toBeNull()
-    expect(s.buyIntents).toEqual([1])
+    expect(s.buyIntents).toEqual([{ playerIndex: 1, elapsedMs: 500 }])
     expect(s.phase).toBe('buy-window')
     expect(s.players[1].hand).toHaveLength(11)
     expect(s.discardPile).toHaveLength(1)
@@ -248,16 +248,19 @@ describe('declareBuy', () => {
 
   it('lets a later player call buy after someone else has', () => {
     const base = openRound(3)
-    const first = declareBuy(base, 1)
+    const first = declareBuy(base, 1, 800)
     expect(canBuyDiscard(first, 2)).toBe(true)
     expect(canBuyDiscard(first, 1)).toBe(false)
-    const second = declareBuy(first, 2)
-    expect(second.buyIntents).toEqual([1, 2])
+    const second = declareBuy(first, 2, 200)
+    expect(second.buyIntents).toEqual([
+      { playerIndex: 1, elapsedMs: 800 },
+      { playerIndex: 2, elapsedMs: 200 },
+    ])
     expect(second.phase).toBe('buy-window')
   })
 
   it('returns error if current player tries to buy', () => {
-    const s = declareBuy(openRound(3), 0)
+    const s = declareBuy(openRound(3), 0, 100)
     expect(s.lastError).toBeTruthy()
   })
 
@@ -268,7 +271,7 @@ describe('declareBuy', () => {
     expect(s.currentPlayerIndex).toBe(1)
     expect(s.lastDiscarderIndex).toBe(0)
     expect(canBuyDiscard(s, 0)).toBe(false)
-    const bought = declareBuy(s, 0)
+    const bought = declareBuy(s, 0, 100)
     expect(bought.lastError).toBe('Cannot buy your own discard')
   })
 
@@ -277,9 +280,9 @@ describe('declareBuy', () => {
     const cardId = s.players[0].hand[0].id
     s = discard(s, cardId)
     expect(canBuyDiscard(s, 2)).toBe(true)
-    const called = declareBuy(s, 2)
+    const called = declareBuy(s, 2, 100)
     expect(called.lastError).toBeNull()
-    expect(called.buyIntents).toEqual([2])
+    expect(called.buyIntents).toEqual([{ playerIndex: 2, elapsedMs: 100 }])
   })
 
   it('allows buying the initial deck-flip discard', () => {
@@ -287,29 +290,45 @@ describe('declareBuy', () => {
     expect(s.lastDiscarderIndex).toBeNull()
     expect(canBuyDiscard(s, 1)).toBe(true)
   })
+
+  it('rejects negative or non-finite elapsedMs', () => {
+    const base = openRound(3)
+    expect(declareBuy(base, 1, -1).lastError).toBe('Invalid buy timing')
+    expect(declareBuy(base, 1, Number.NaN).lastError).toBe('Invalid buy timing')
+  })
 })
 
 describe('drawFromDeck with a pending buy', () => {
-  it('deals the discard and a penalty to the first buyer, then draws for the active player', () => {
+  it('deals the discard and a penalty to the fastest buyer, then draws for the active player', () => {
     const base = openRound(3)
     const top = base.discardPile[base.discardPile.length - 1]
     const penalty = base.drawPile[base.drawPile.length - 1]
     const drawn = base.drawPile[base.drawPile.length - 2]
-    const called = declareBuy(declareBuy(base, 1), 2)
+    // Seat 1 called first in wall time, but seat 2 reported a lower elapsedMs.
+    const called = declareBuy(declareBuy(base, 1, 900), 2, 200)
     const s = drawFromDeck(called)
     expect(s.lastError).toBeNull()
     expect(s.phase).toBe('play-or-discard')
     expect(s.buyIntents).toEqual([])
-    expect(s.players[1].hand.find((c) => c.id === top.id)).toBeTruthy()
-    expect(s.players[1].hand.find((c) => c.id === penalty.id)).toBeTruthy()
-    expect(s.players[1].hand).toHaveLength(13)
-    expect(s.players[2].hand).toHaveLength(11)
+    expect(s.players[2].hand.find((c) => c.id === top.id)).toBeTruthy()
+    expect(s.players[2].hand.find((c) => c.id === penalty.id)).toBeTruthy()
+    expect(s.players[2].hand).toHaveLength(13)
+    expect(s.players[1].hand).toHaveLength(11)
     expect(s.players[0].hand.find((c) => c.id === drawn.id)).toBeTruthy()
     expect(s.players[0].hand).toHaveLength(12)
   })
 
+  it('breaks elapsedMs ties by lowest playerIndex', () => {
+    const base = openRound(3)
+    const top = base.discardPile[base.discardPile.length - 1]
+    const called = declareBuy(declareBuy(base, 2, 500), 1, 500)
+    const s = drawFromDeck(called)
+    expect(s.players[1].hand.find((c) => c.id === top.id)).toBeTruthy()
+    expect(s.players[2].hand).toHaveLength(11)
+  })
+
   it('closes the buy window so nobody else can call', () => {
-    const s = drawFromDeck(declareBuy(openRound(3), 1))
+    const s = drawFromDeck(declareBuy(openRound(3), 1, 100))
     expect(canBuyDiscard(s, 2)).toBe(false)
   })
 })
@@ -318,7 +337,7 @@ describe('claimDiscardAsDraw denies a pending buy', () => {
   it('gives the discard to the active player and nothing to the buyer', () => {
     const base = openRound(3)
     const top = base.discardPile[base.discardPile.length - 1]
-    const called = declareBuy(base, 1)
+    const called = declareBuy(base, 1, 100)
     const s = claimDiscardAsDraw(called)
     expect(s.players[0].hand.find((c) => c.id === top.id)).toBeTruthy()
     expect(s.players[1].hand).toHaveLength(11)
@@ -515,7 +534,7 @@ describe('extendMeld', () => {
       ],
     }
     const s = stubPlayState({
-      hand: [card('r4', 'red', 4), card('extra', 'blue', 9)],
+      hand: [card('r4', 'red', 4), card('extra', 'black', 9)],
       hasGoneDown: true,
       tableMetlds: [meld],
     })

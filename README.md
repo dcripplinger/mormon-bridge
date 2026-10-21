@@ -90,9 +90,22 @@ Each turn proceeds in this order:
 - After 7 rounds, the player with the lowest total score wins
 
 ### Multiplayer
-- Goal: Online multiplayer with private rooms (room passwords)
-- Simple UX: create/join room, room code/password, ready-up
-- Networking: WebSocket-based; server-authoritative turn sync (planned for a later phase)
+- Online private rooms only (no public matchmaking, no pass-and-play)
+- UX: create/join with room code + password, ready-up, host starts at 3–5 players
+- Server-authoritative via Cloudflare Durable Objects (`worker/`); clients render fogged `ClientView`s
+- Buy races use **client-reported elapsedMs** (time from buy-window start to tap), not server receive time
+- Shared host logic lives in `shared/` (`HostRuntime`) so a future client-host mode can reuse the same protocol
+- Local solo + AI still runs entirely in the browser (no worker required)
+
+#### Multiplayer local dev
+
+```bash
+npm install
+npm run dev:worker   # http://127.0.0.1:8787
+npm run dev:web      # http://localhost:5173 — proxies /api to the worker
+```
+
+Deploy the worker with `npm run deploy:worker` (see `worker/README.md`). Set `VITE_API_BASE` for production builds.
 
 ### Building and Deploying
 

@@ -7,7 +7,7 @@
 
 import { Preferences } from '@capacitor/preferences'
 import { getAvatar, pickFreeAvatar } from '../avatars/catalog'
-import type { GameState } from '../game/state'
+import type { BuyIntent, GameState } from '../game/state'
 import type { GameSettings, SeatDraft, WildMoveFrom, WildMoveTo } from './types'
 
 // ---------------------------------------------------------------------------
@@ -45,6 +45,32 @@ interface StoredActiveGame {
 
 const VALID_WILD_FROM: WildMoveFrom[] = ['runs', 'runs-or-groups', 'nowhere']
 const VALID_WILD_TO: WildMoveTo[] = ['any-meld', 'any-meld-or-hand', 'same-meld']
+
+/** Accept BuyIntent[] or legacy number[] (first-caller order → increasing elapsedMs). */
+function normalizeBuyIntents(raw: unknown): BuyIntent[] {
+  if (!Array.isArray(raw)) return []
+  const out: BuyIntent[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i]
+    if (typeof item === 'number' && Number.isInteger(item) && item >= 0) {
+      out.push({ playerIndex: item, elapsedMs: i })
+      continue
+    }
+    if (
+      item
+      && typeof item === 'object'
+      && Number.isInteger((item as BuyIntent).playerIndex)
+      && Number.isFinite((item as BuyIntent).elapsedMs)
+      && (item as BuyIntent).elapsedMs >= 0
+    ) {
+      out.push({
+        playerIndex: (item as BuyIntent).playerIndex,
+        elapsedMs: (item as BuyIntent).elapsedMs,
+      })
+    }
+  }
+  return out
+}
 
 function isValidSettings(s: unknown): s is GameSettings {
   if (!s || typeof s !== 'object') return false
@@ -144,7 +170,7 @@ export async function loadActiveGame(): Promise<GameState | null> {
       players,
       roundLeaderIndex,
       ready: players.map((_, i) => ready[i] === true),
-      buyIntents: Array.isArray(parsed.state.buyIntents) ? parsed.state.buyIntents : [],
+      buyIntents: normalizeBuyIntents(parsed.state.buyIntents),
       extendHistory: Array.isArray(parsed.state.extendHistory) ? parsed.state.extendHistory : [],
       pendingWild: parsed.state.pendingWild ?? null,
       roundVictorIndex: parsed.state.roundVictorIndex ?? null,

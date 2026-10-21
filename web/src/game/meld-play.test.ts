@@ -53,7 +53,7 @@ describe('planMeldPlay', () => {
   })
 
   it('puts a wild on the left of a group', () => {
-    const group = [c('a', 'red', 7), c('b', 'blue', 7), c('d', 'green', 7)]
+    const group = [c('a', 'red', 7), c('b', 'black', 7), c('d', 'green', 7)]
     const plan = planMeldPlay(group, 'group', wild())
     expect(plan?.index).toBe(0)
     expect(plan?.cards[0].color).toBe('wild')
@@ -70,7 +70,7 @@ describe('wildDestinations', () => {
   it('limits a same-meld wild to the set it came from', () => {
     const melds = [
       { id: 'src', type: 'run' as const, cards: [c('a', 'red', 5), c('b', 'red', 6), c('c', 'red', 7), c('d', 'red', 8)] },
-      { id: 'other', type: 'group' as const, cards: [c('g', 'blue', 3), c('h', 'green', 3), c('i', 'yellow', 3)] },
+      { id: 'other', type: 'group' as const, cards: [c('g', 'black', 3), c('h', 'green', 3), c('i', 'yellow', 3)] },
     ]
     const dests = wildDestinations(melds, wild(), { from: 'runs', to: 'same-meld' }, 'src')
     expect(dests.every((d) => d.meldId === 'src')).toBe(true)

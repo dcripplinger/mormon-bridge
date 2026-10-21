@@ -61,6 +61,16 @@ export interface PlayerSetup {
   avatarId: string
 }
 
+/** One seat's buy call for the current discard. */
+export interface BuyIntent {
+  playerIndex: number
+  /** Milliseconds from the caller's buy-window start until they submitted buy. */
+  elapsedMs: number
+}
+
+/** Soft upper bound for client-reported buy elapsed time (reject above this). */
+export const MAX_BUY_ELAPSED_MS = 120_000
+
 export interface GameState {
   players: PlayerState[]
   drawPile: Card[]
@@ -73,11 +83,12 @@ export interface GameState {
   /** Player who discarded the current top card, or null if it was flipped from the deck. */
   lastDiscarderIndex: number | null
   /**
-   * Players who have called buy this window, earliest first.
-   * The first caller receives the discard if the active player draws from the deck.
-   * Later callers are recorded so everyone who wanted the card is known; they do not take it.
+   * Players who have called buy this window.
+   * The caller with the lowest elapsedMs receives the discard if the active player
+   * draws from the deck (tie-break: lowest playerIndex). Others are recorded only.
+   * elapsedMs is client-reported time from buy-window start to their tap.
    */
-  buyIntents: number[]
+  buyIntents: BuyIntent[]
   /** Plays onto existing sets this turn. Cleared when the turn or round ends. */
   extendHistory: ExtendRecord[]
   /**
@@ -283,11 +294,34 @@ export function topDiscard(state: GameState): Card | null {
  * and the player who just discarded (cannot buy back their own discard).
  * Initial deck-flip discards have no discarder and may be bought by non-current players.
  */
+export function hasBuyIntent(state: GameState, buyerIndex: number): boolean {
+  return state.buyIntents.some((b) => b.playerIndex === buyerIndex)
+}
+
+/**
+ * Seat that wins the discard if the active player draws from the deck, or null.
+ * Lowest elapsedMs wins; ties break to the lowest playerIndex.
+ */
+export function winningBuyerIndex(state: GameState): number | null {
+  if (state.buyIntents.length === 0) return null
+  let best = state.buyIntents[0]
+  for (let i = 1; i < state.buyIntents.length; i++) {
+    const cur = state.buyIntents[i]
+    if (
+      cur.elapsedMs < best.elapsedMs
+      || (cur.elapsedMs === best.elapsedMs && cur.playerIndex < best.playerIndex)
+    ) {
+      best = cur
+    }
+  }
+  return best.playerIndex
+}
+
 export function canBuyDiscard(state: GameState, buyerIndex: number): boolean {
   if (state.phase !== 'buy-window') return false
   if (buyerIndex === state.currentPlayerIndex) return false
   if (buyerIndex === state.lastDiscarderIndex) return false
-  if (state.buyIntents.includes(buyerIndex)) return false
+  if (hasBuyIntent(state, buyerIndex)) return false
   if (!topDiscard(state)) return false
   return true
 }
@@ -323,18 +357,26 @@ function drawFromPile(state: GameState): { card: Card; state: GameState } | null
 
 /**
  * Record that a player wants the top discard. Does not move cards.
- * The first caller wins if the active player later draws from the deck.
+ * The caller with the lowest elapsedMs wins if the active player later draws from the deck.
  * Later callers are still recorded; the window stays open until the active player acts.
  */
-export function declareBuy(state: GameState, buyerIndex: number): GameState {
+export function declareBuy(
+  state: GameState,
+  buyerIndex: number,
+  elapsedMs: number,
+): GameState {
   if (state.phase !== 'buy-window') return err(state, 'Not in buy window')
   if (buyerIndex === state.currentPlayerIndex) return err(state, 'Current player cannot buy')
   if (buyerIndex === state.lastDiscarderIndex) return err(state, 'Cannot buy your own discard')
   if (!topDiscard(state)) return err(state, 'No discard to buy')
-  if (state.buyIntents.includes(buyerIndex)) return err(state, 'Already buying')
+  if (hasBuyIntent(state, buyerIndex)) return err(state, 'Already buying')
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+    return err(state, 'Invalid buy timing')
+  }
+  if (elapsedMs > MAX_BUY_ELAPSED_MS) return err(state, 'Invalid buy timing')
   return {
     ...state,
-    buyIntents: [...state.buyIntents, buyerIndex],
+    buyIntents: [...state.buyIntents, { playerIndex: buyerIndex, elapsedMs }],
     lastError: null,
   }
 }
@@ -399,7 +441,9 @@ export function drawFromDeck(state: GameState): GameState {
 
   let s = state
   if (s.phase === 'buy-window' && s.buyIntents.length > 0) {
-    s = awardBuy(s, s.buyIntents[0])
+    const winner = winningBuyerIndex(s)
+    if (winner === null) return err(s, 'No buyer')
+    s = awardBuy(s, winner)
     if (s.lastError) return s
   }
 

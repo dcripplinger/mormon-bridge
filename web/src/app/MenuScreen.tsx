@@ -15,6 +15,7 @@ interface Props {
   onStart: (players: PlayerSetup[]) => void
   onContinue: () => void
   onQuit: () => void
+  onOnline?: () => void
 }
 
 const DEFAULT_GAME_SETTINGS: GameSettings = {
@@ -79,6 +80,7 @@ export default function MenuScreen({
   onStart,
   onContinue,
   onQuit,
+  onOnline,
 }: Props) {
   const [seats, setSeats] = useState<SeatDraft[]>(() =>
     normalizeSeats(
@@ -401,6 +403,24 @@ export default function MenuScreen({
             }}
           >
             Start Game
+          </button>
+        )}
+
+        {onOnline && (
+          <button
+            type="button"
+            onClick={onOnline}
+            style={{
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+              border: '1px solid var(--border)',
+              padding: '10px',
+              borderRadius: '8px',
+              fontSize: '0.95rem',
+              fontWeight: 600,
+            }}
+          >
+            Online private room
           </button>
         )}
       </div>

@@ -310,13 +310,13 @@ export function findBestGoDown(hand: Card[], roundIndex: number): string[][] | n
     needR: number,
     used: Set<string>,
     chosen: CandidateMeld[],
-  ) => {
+  ): void => {
     if (nodes++ > NODE_BUDGET) return
     if (needG === 0 && needR === 0) {
       const total = chosen.reduce((s, m) => s + m.cards.length, 0)
       if (total > bestCards) {
         bestCards = total
-        best = [...chosen]
+        best = chosen.slice() as CandidateMeld[]
         // Perfect: used as many cards as possible for this requirement count
         if (bestCards >= hand.length) nodes = NODE_BUDGET + 1
       }
@@ -350,8 +350,10 @@ export function findBestGoDown(hand: Card[], roundIndex: number): string[][] | n
 
   search(req.groups, req.runs, new Set(), [])
 
-  if (!best) return null
-  return best.map((m) => m.cards.map((c) => c.id))
+  if (best === null) return null
+  // Local copy: TS control-flow cannot see assignments inside `search`.
+  const partition: CandidateMeld[] = best
+  return partition.map((m) => m.cards.map((c) => c.id))
 }
 
 function overlaps(a: Set<string>, b: Set<string>): boolean {
@@ -1310,7 +1312,7 @@ export function runAIStep(state: GameState): GameState {
     for (const p of s.players) {
       if (!p.isAI) continue
       if (decideBuy(s, p.index)) {
-        s = declareBuy(s, p.index)
+        s = declareBuy(s, p.index, sampleBuyDelayMs())
       }
     }
     const current = s.players[s.currentPlayerIndex]

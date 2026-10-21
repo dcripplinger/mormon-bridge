@@ -836,7 +836,7 @@ describe('smoke: all-AI game progresses', () => {
         if (state.phase === 'buy-window') {
           for (const p of state.players) {
             if (decideBuy(state, p.index)) {
-              state = declareBuy(state, p.index)
+              state = declareBuy(state, p.index, 0)
             }
           }
         }

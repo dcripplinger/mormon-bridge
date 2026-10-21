@@ -44,6 +44,7 @@ import {
   setReady,
   topDiscard,
   undoExtend,
+  winningBuyerIndex,
 } from '../game/state'
 import type { GameSettings } from './types'
 import AvatarView from '../ui/AvatarView'
@@ -88,7 +89,19 @@ interface Props {
   /** Called once when the game finishes (phase === 'game-end'); clears the save. */
   onGameEnd: () => void
   settings?: GameSettings
+  /**
+   * Online / remote play: parent owns authority via ClientView → shadow GameState.
+   * Local reducer is not used for commits; bots and persistence are disabled.
+   */
+  controlledState?: GameState
+  onControlledAction?: (action: Action) => void
+  /** Seat for the local human when multiple seats are human (online). */
+  humanSeatIndex?: number
+  skipBots?: boolean
+  skipPersistence?: boolean
 }
+
+export type GameScreenAction = Action
 
 function wildRulesOf(settings?: GameSettings): WildRules {
   if (!settings) return DEFAULT_WILD_RULES
@@ -96,7 +109,7 @@ function wildRulesOf(settings?: GameSettings): WildRules {
 }
 
 type Action =
-  | { type: 'DECLARE_BUY'; buyerIndex: number }
+  | { type: 'DECLARE_BUY'; buyerIndex: number; elapsedMs: number }
   | { type: 'CLAIM_DISCARD' }
   | { type: 'DRAW_DECK' }
   | { type: 'EXTEND'; meldId: string; cardId: string; side?: MeldEnd; rules: WildRules }
@@ -112,7 +125,7 @@ type Action =
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
     case 'DECLARE_BUY':
-      return declareBuy(state, action.buyerIndex)
+      return declareBuy(state, action.buyerIndex, action.elapsedMs)
     case 'CLAIM_DISCARD':
       return claimDiscardAsDraw(state)
     case 'DRAW_DECK':
@@ -186,9 +199,25 @@ function pocketFanLayout(region: SetRegion, melds: Meld[], cardW: number): {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function GameScreen({ initialState, onReturnToMenu, onSave, onGameEnd, settings }: Props) {
+export default function GameScreen({
+  initialState,
+  onReturnToMenu,
+  onSave,
+  onGameEnd,
+  settings,
+  controlledState,
+  onControlledAction,
+  humanSeatIndex,
+  skipBots = false,
+  skipPersistence = false,
+}: Props) {
   const rules = useMemo(() => wildRulesOf(settings), [settings])
-  const [state, dispatch] = useReducer(reducer, initialState)
+  const [localState, localDispatch] = useReducer(reducer, initialState)
+  const state = controlledState ?? localState
+  const put = useCallback((action: Action) => {
+    if (onControlledAction) onControlledAction(action)
+    else localDispatch(action)
+  }, [onControlledAction])
 
   // Autosave on every state change; clear the save when the game ends.
   const onSaveRef = useRef(onSave)
@@ -196,12 +225,13 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   onSaveRef.current = onSave
   onGameEndRef.current = onGameEnd
   useEffect(() => {
+    if (skipPersistence) return
     if (state.phase === 'game-end') {
       onGameEndRef.current()
     } else {
       onSaveRef.current(state)
     }
-  }, [state])
+  }, [state, skipPersistence])
 
   const [hoveredMeldId, setHoveredMeldId] = useState<string | null>(null)
   const [hoveredMeldSide, setHoveredMeldSide] = useState<MeldEnd | null>(null)
@@ -262,7 +292,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     setFlightQueue(rest)
 
     if (done.pendingAction) {
-      dispatch(done.pendingAction)
+      put(done.pendingAction)
       setPendingDiscard(null)
       return
     }
@@ -271,7 +301,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       setLandingCardId(done.card.id)
       landingTimerRef.current = setTimeout(() => setLandingCardId(null), 320)
     }
-  }, [])
+  }, [put])
 
   useEffect(() => () => {
     if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current)
@@ -279,7 +309,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
 
   const currentPlayer = state.players[state.currentPlayerIndex]
   const top = topDiscard(state)
-  const humanPlayerIndex = state.players.findIndex((p) => !p.isAI)
+  const humanPlayerIndex =
+    humanSeatIndex !== undefined
+      ? humanSeatIndex
+      : state.players.findIndex((p) => !p.isAI)
   const opponentSeats =
     humanPlayerIndex === -1
       ? []
@@ -390,6 +423,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
 
   // Bots classify their hand, then check in after a short wait.
   useEffect(() => {
+    if (skipBots) return
     if (state.phase !== 'round-prep') return
     const roundIndex = state.roundIndex
     const timers: ReturnType<typeof setTimeout>[] = []
@@ -401,7 +435,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         const s = stateRef.current
         if (s.phase !== 'round-prep' || s.roundIndex !== roundIndex) return
         if (s.ready[p.index]) return
-        dispatch({ type: 'SET_READY', playerIndex: p.index, ready: true })
+        put({ type: 'SET_READY', playerIndex: p.index, ready: true })
       }, delay))
     }
     return () => {
@@ -410,7 +444,12 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   }, [state.phase, state.roundIndex])
 
   // Last ready check-in starts a grace period, then a countdown, then the flip.
+  // Online: server reveals when everyone is ready — skip local countdown.
   useEffect(() => {
+    if (skipBots) {
+      setPrepBeat('open')
+      return
+    }
     if (state.phase !== 'round-prep') {
       setPrepBeat('open')
       revealStarted.current = false
@@ -427,9 +466,10 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       setPrepBeat('countdown')
     }, 1000)
     return () => clearTimeout(graceTimer)
-  }, [state.phase, state.roundIndex, state.ready])
+  }, [state.phase, state.roundIndex, state.ready, skipBots])
 
   useEffect(() => {
+    if (skipBots) return
     if (state.phase !== 'round-prep' || prepBeat !== 'countdown') return
     setCountdownLeft(3)
     const started = Date.now()
@@ -453,14 +493,14 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           pendingAction: { type: 'REVEAL_OPENING' },
         })
       } else {
-        dispatch({ type: 'REVEAL_OPENING' })
+        put({ type: 'REVEAL_OPENING' })
       }
     }, 3000)
     return () => {
       clearInterval(tick)
       clearTimeout(done)
     }
-  }, [prepBeat, state.phase, state.roundIndex, enqueueFlight])
+  }, [prepBeat, state.phase, state.roundIndex, enqueueFlight, put, skipBots])
 
   // The human's later turns. The opening of a round is the countdown, not a callout.
   useEffect(() => {
@@ -524,14 +564,19 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   }, [humanPlayerIndex])
 
   const pushDrawFlights = useCallback((s: GameState, sourceRect?: DOMRect) => {
+    // Online: shadow draw pile is stubs — just send the action.
+    if (skipBots) {
+      put({ type: 'DRAW_DECK' })
+      return
+    }
     const next = drawFromDeck(s)
     if (next.lastError) {
-      dispatch({ type: 'DRAW_DECK' })
+      put({ type: 'DRAW_DECK' })
       return
     }
     const deckRect = sourceRect ?? deckWrapRef.current?.getBoundingClientRect()
     const discardRect = discardWrapRef.current?.getBoundingClientRect()
-    const buyerIndex = s.phase === 'buy-window' ? s.buyIntents[0] : undefined
+    const buyerIndex = s.phase === 'buy-window' ? (winningBuyerIndex(s) ?? undefined) : undefined
 
     if (buyerIndex !== undefined) {
       const topCard = topDiscard(s)
@@ -575,12 +620,23 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         arrivalPlayerIndex: arrivalFor(drawer),
       })
     }
-    dispatch({ type: 'DRAW_DECK' })
-  }, [arrivalFor, enqueueFlight, flightTarget, humanPlayerIndex])
+    put({ type: 'DRAW_DECK' })
+  }, [arrivalFor, enqueueFlight, flightTarget, humanPlayerIndex, put, skipBots])
 
-  // Bots call buy on their own timers. Declaring does not reset the active player's wait.
+  // Wall-clock start for the human's client-reported buy elapsedMs.
+  const buyWindowStartedAt = useRef<number | null>(null)
   const buyWindowKey = `${state.roundIndex}:${state.currentPlayerIndex}:${top?.id ?? ''}:${state.phase}`
   useEffect(() => {
+    if (state.phase === 'buy-window') {
+      buyWindowStartedAt.current = performance.now()
+    } else {
+      buyWindowStartedAt.current = null
+    }
+  }, [buyWindowKey, state.phase])
+
+  // Bots call buy on their own timers. Declaring does not reset the active player's wait.
+  useEffect(() => {
+    if (skipBots) return
     if (animBusy) return
     if (state.phase !== 'buy-window') return
     const timers: ReturnType<typeof setTimeout>[] = []
@@ -592,7 +648,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       timers.push(setTimeout(() => {
         const s = stateRef.current
         if (!canBuyDiscard(s, p.index)) return
-        dispatch({ type: 'DECLARE_BUY', buyerIndex: p.index })
+        put({ type: 'DECLARE_BUY', buyerIndex: p.index, elapsedMs: delay })
         showBubble(p.index, BUY_BUBBLE_TEXT, 'buy')
       }, delay))
     }
@@ -603,6 +659,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
 
   // Active bot chooses claim (deny buys) or deck (resolve the first buy, then draw).
   useEffect(() => {
+    if (skipBots) return
     if (animBusy) return
     if (!currentPlayer.isAI) return
     if (state.phase !== 'buy-window' && state.phase !== 'draw') return
@@ -616,7 +673,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           const rect = discardWrapRef.current?.getBoundingClientRect()
           const topCard = topDiscard(s)
           const targetRef = handAnchorRefs[playerIndex]
-          dispatch({ type: 'CLAIM_DISCARD' })
+          put({ type: 'CLAIM_DISCARD' })
           if (rect && topCard && targetRef) {
             enqueueFlight({
               card: topCard,
@@ -704,7 +761,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       })
       return
     }
-    dispatch(action)
+    put(action)
     enqueueFlight({
       card,
       sourceRect,
@@ -720,6 +777,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
 
   // AI: current-bot play (paused while animating)
   useEffect(() => {
+    if (skipBots) return
     if (animBusy) return
     if (state.phase === 'game-end' || state.phase === 'round-end') return
 
@@ -738,12 +796,12 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           if (!step) return
 
           if (step.type === 'goDown') {
-            dispatch({ type: 'GO_DOWN', meldCardArrays: step.melds })
+            put({ type: 'GO_DOWN', meldCardArrays: step.melds })
             return
           }
 
           if (step.type === 'keep-wild') {
-            dispatch({ type: 'KEEP_WILD' })
+            put({ type: 'KEEP_WILD' })
             return
           }
 
@@ -795,9 +853,13 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   }, [pushDrawFlights, state])
 
   const handleClaimDiscard = useCallback((sourceRect?: DOMRect) => {
+    if (skipBots) {
+      put({ type: 'CLAIM_DISCARD' })
+      return
+    }
     const rect = sourceRect ?? discardWrapRef.current?.getBoundingClientRect()
     const topCard = topDiscard(state)
-    dispatch({ type: 'CLAIM_DISCARD' })
+    put({ type: 'CLAIM_DISCARD' })
     if (rect && topCard) {
       enqueueFlight({
         card: topCard,
@@ -807,12 +869,14 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         viaCenter: true,
       })
     }
-  }, [state, enqueueFlight])
+  }, [state, enqueueFlight, put, skipBots])
 
   const handleBuy = useCallback(() => {
     if (humanPlayerIndex === -1) return
-    const next = declareBuy(state, humanPlayerIndex)
-    dispatch({ type: 'DECLARE_BUY', buyerIndex: humanPlayerIndex })
+    const started = buyWindowStartedAt.current ?? performance.now()
+    const elapsedMs = Math.max(0, performance.now() - started)
+    const next = declareBuy(state, humanPlayerIndex, elapsedMs)
+    put({ type: 'DECLARE_BUY', buyerIndex: humanPlayerIndex, elapsedMs })
     if (!next.lastError) showBubble(humanPlayerIndex, BUY_BUBBLE_TEXT, 'buy')
   }, [state, humanPlayerIndex, showBubble])
 
@@ -859,7 +923,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
       const el = document.querySelector<HTMLElement>(
         `[data-hand-card][data-card-id="${CSS.escape(rec.playedCardId)}"]`,
       )
-      dispatch({ type: 'UNDO_EXTEND' })
+      put({ type: 'UNDO_EXTEND' })
       if (!card) return
       enqueueFlight({
         card,
@@ -876,7 +940,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     const meld = s.tableMetlds.find((m) => m.id === rec.meldId)
     const played = meld?.cards.find((c) => c.id === rec.playedCardId)
     if (!meld || !played) {
-      dispatch({ type: 'UNDO_EXTEND' })
+      put({ type: 'UNDO_EXTEND' })
       return
     }
     const rotation = rotationForMeld(rec.meldId)
@@ -889,7 +953,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
     const wildEl = wild ? document.querySelector<HTMLElement>('[data-wild-hold]') : null
     const wildRect = wildEl?.getBoundingClientRect() ?? null
 
-    dispatch({ type: 'UNDO_EXTEND' })
+    put({ type: 'UNDO_EXTEND' })
 
     enqueueFlight({
       card: played,
@@ -932,13 +996,13 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
         prepIds,
       )
       if (!merged) return
-      dispatch({ type: 'REORDER', playerIndex: humanPlayerIndex, orderedIds: merged })
+      put({ type: 'REORDER', playerIndex: humanPlayerIndex, orderedIds: merged })
     },
     [humanPlayerIndex, state.players, prepSlots],
   )
 
   const handleDiscardCard = useCallback((cardId: string) => {
-    dispatch({ type: 'DISCARD', cardId })
+    put({ type: 'DISCARD', cardId })
     setHoveredMeldId(null)
     setDiscardHot(false)
   }, [])
@@ -1074,7 +1138,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
   const handleSubmitPrep = useCallback(() => {
     if (!canSubmitPrep(prepSlots)) return
     const meldCardArrays = prepSlots.map((s) => s.cards.map((c) => c.id))
-    dispatch({ type: 'GO_DOWN', meldCardArrays })
+    put({ type: 'GO_DOWN', meldCardArrays })
     setPrepSlots([])
     setPrepOpen(false)
     setPrepHoveredSlotIndex(null)
@@ -1351,7 +1415,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           onToggleReady={() => {
             if (humanPlayerIndex < 0 || prepBeat === 'countdown') return
             if (state.phase !== 'round-prep') return
-            dispatch({
+            put({
               type: 'SET_READY',
               playerIndex: humanPlayerIndex,
               ready: !state.ready[humanPlayerIndex],
@@ -1706,7 +1770,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           handRef={rules.to === 'any-meld-or-hand' ? handWrapRef : undefined}
           onKeep={
             rules.to === 'any-meld-or-hand'
-              ? () => dispatch({ type: 'KEEP_WILD' })
+              ? () => put({ type: 'KEEP_WILD' })
               : undefined
           }
         />
@@ -1722,7 +1786,7 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
           humanIndex={humanPlayerIndex}
           roundIndex={state.roundIndex}
           victorIndex={state.roundVictorIndex}
-          onContinue={() => dispatch({ type: 'CONTINUE_ROUND' })}
+          onContinue={() => put({ type: 'CONTINUE_ROUND' })}
         />
       )}
 

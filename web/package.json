@@ -20,6 +20,7 @@
     "@capacitor/core": "^8.5.2",
     "@capacitor/preferences": "^8.0.1",
     "@fontsource/dm-sans": "^5.3.0",
+    "@mormon-bridge/shared": "*",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
