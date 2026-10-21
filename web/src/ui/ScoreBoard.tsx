@@ -41,7 +41,7 @@ export default function ScoreBoard({
           background: 'rgba(0, 0, 0, 0.45)',
           border: 'none',
           padding: 0,
-          zIndex: 40,
+          zIndex: 1100,
           cursor: 'pointer',
         }}
       />
@@ -59,7 +59,7 @@ export default function ScoreBoard({
           background: 'var(--surface)',
           borderLeft: '2px solid var(--border)',
           padding: '16px 14px',
-          zIndex: 50,
+          zIndex: 1101,
           display: 'flex',
           flexDirection: 'column',
           gap: '8px',

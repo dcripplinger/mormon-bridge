@@ -1471,7 +1471,11 @@ export default function GameScreen({ initialState, onReturnToMenu, onSave, onGam
             {state.phase === 'round-prep' && (
               <div
                 style={{
-                  marginTop: '-6px',
+                  position: 'absolute',
+                  top: '100%',
+                  left: 0,
+                  right: 0,
+                  marginTop: '14px',
                   textAlign: 'center',
                   color: 'var(--text)',
                   pointerEvents: 'none',

@@ -135,7 +135,9 @@ export default function WildHold({
           transform: 'translate(-50%, -50%)',
           zIndex: 30,
           pointerEvents: hidden ? 'none' : 'auto',
-          visibility: hidden || lifted ? 'hidden' : 'visible',
+          touchAction: 'none',
+          visibility: hidden ? 'hidden' : 'visible',
+          opacity: lifted ? 0 : 1,
           filter: 'drop-shadow(0 10px 16px rgba(0,0,0,0.45))',
           cursor: 'grab',
         }}

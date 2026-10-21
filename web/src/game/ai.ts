@@ -959,6 +959,37 @@ export function decideBuy(state: GameState, buyerIndex: number): boolean {
   return buy
 }
 
+function handOverplay(
+  hand: Card[],
+  tableMelds: Meld[],
+  roundIndex: number,
+  hasGoneDown: boolean,
+): number {
+  const canGoDown = !hasGoneDown && findBestGoDown(hand, roundIndex) !== null
+  return scorePurposePlan(hand, tableMelds, roundIndex, hasGoneDown, canGoDown).overplay
+}
+
+/**
+ * Overplay of the hand after claiming `card` and throwing the discard this
+ * bot would choose. Hand size is unchanged, which is the real end of a draw.
+ */
+function overplayAfterClaim(
+  hand: Card[],
+  card: Card,
+  tableMelds: Meld[],
+  roundIndex: number,
+  hasGoneDown: boolean,
+): number {
+  const withCard = [...hand, card]
+  const thrown = pickDiscardCard(
+    withCard,
+    evaluateHand(withCard, tableMelds, roundIndex, hasGoneDown),
+    () => 0,
+  )
+  const kept = withCard.filter((c) => c.id !== thrown.id)
+  return handOverplay(kept, tableMelds, roundIndex, hasGoneDown)
+}
+
 export function decideDraw(state: GameState): DrawChoice {
   const top = topDiscard(state)
   const player = state.players[state.currentPlayerIndex]
@@ -1008,6 +1039,31 @@ export function decideDraw(state: GameState): DrawChoice {
     }
   }
 
+  let overplayBefore: number | undefined
+  let overplayAfter: number | undefined
+  if (choice === 'deck') {
+    const nobodyDown = state.players.every((p) => !p.hasGoneDown)
+    if (nobodyDown) {
+      overplayBefore = handOverplay(
+        player.hand,
+        state.tableMetlds,
+        state.roundIndex,
+        player.hasGoneDown,
+      )
+      overplayAfter = overplayAfterClaim(
+        player.hand,
+        top,
+        state.tableMetlds,
+        state.roundIndex,
+        player.hasGoneDown,
+      )
+      if (overplayAfter > overplayBefore + 1e-6) {
+        choice = 'claim'
+        reason = `Claim ${formatCardShort(top)}: overplay ${overplayBefore.toFixed(2)}→${overplayAfter.toFixed(2)} and nobody is down`
+      }
+    }
+  }
+
   if (choice === 'deck') {
     const onlyLater =
       !player.hasGoneDown &&
@@ -1036,6 +1092,8 @@ export function decideDraw(state: GameState): DrawChoice {
       readinessDelta: breakdown.readinessDelta,
       versatilityDelta: breakdown.versatilityDelta,
       overplayDelta: Number(breakdown.overplayDelta.toFixed(3)),
+      overplayBefore,
+      overplayAfter,
       purposeBefore: breakdown.purposeSummaryBefore,
       purposeAfter: breakdown.purposeSummaryAfter,
       hasGoneDown: player.hasGoneDown,

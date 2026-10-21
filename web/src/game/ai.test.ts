@@ -527,7 +527,77 @@ describe('decideDraw', () => {
     expect(decideDraw(state)).toBe('claim')
   })
 
-  it('prefers deck when discard is only later-playable and far from go-down', () => {
+  it('claims a layoff when nobody has gone down and it replaces a throwaway', () => {
+    const hand = [
+      card('a', 'yellow', 2),
+      card('b', 'yellow', 2),
+      card('c', 'green', 2),
+      card('d', 'yellow', 7),
+      card('e', 'red', 7),
+      card('f', 'black', 14),
+    ]
+    const state = stubState({
+      hand,
+      phase: 'buy-window',
+      discardPile: [card('g', 'red', 2)],
+      hasDrawnThisTurn: false,
+    })
+    expect(decideDraw(state)).toBe('claim')
+  })
+
+  it('draws the deck when the card it would throw is already a layoff', () => {
+    const fourteens: Meld = {
+      id: 'm14',
+      ownerIndex: 1,
+      type: 'group',
+      cards: [
+        card('t1', 'red', 14),
+        card('t2', 'yellow', 14),
+        card('t3', 'green', 14),
+      ],
+    }
+    const hand = [
+      card('a', 'yellow', 2),
+      card('b', 'yellow', 2),
+      card('c', 'green', 2),
+      card('d', 'yellow', 7),
+      card('e', 'red', 7),
+      card('f', 'black', 14),
+    ]
+    const state = stubState({
+      hand,
+      tableMetlds: [fourteens],
+      phase: 'buy-window',
+      discardPile: [card('g', 'red', 2)],
+      hasDrawnThisTurn: false,
+    })
+    expect(decideDraw(state)).toBe('deck')
+  })
+
+  it('draws the deck for a layoff upgrade once someone has gone down', () => {
+    const hand = [
+      card('a', 'yellow', 2),
+      card('b', 'yellow', 2),
+      card('c', 'green', 2),
+      card('d', 'yellow', 7),
+      card('e', 'red', 7),
+      card('f', 'black', 14),
+    ]
+    const state = stubState({
+      hand,
+      phase: 'buy-window',
+      discardPile: [card('g', 'red', 2)],
+      hasDrawnThisTurn: false,
+      players: [
+        player(0, hand),
+        player(1, [card('other1', 'red', 1)], { hasGoneDown: true }),
+        player(2, [card('other2', 'yellow', 3)]),
+      ],
+    })
+    expect(decideDraw(state)).toBe('deck')
+  })
+
+  it('claims a later-playable discard while nobody has gone down', () => {
     const runMeld: Meld = {
       id: 'm1',
       ownerIndex: 1,
@@ -550,6 +620,38 @@ describe('decideDraw', () => {
       phase: 'buy-window',
       discardPile: [card('r9', 'red', 9)],
       hasDrawnThisTurn: false,
+    })
+    expect(decideDraw(state)).toBe('claim')
+  })
+
+  it('skips a later-playable discard once someone has gone down', () => {
+    const runMeld: Meld = {
+      id: 'm1b',
+      ownerIndex: 1,
+      type: 'run',
+      cards: [
+        card('r5b', 'red', 5),
+        card('r6b', 'red', 6),
+        card('r7b', 'red', 7),
+        card('r8b', 'red', 8),
+      ],
+    }
+    const hand = [
+      card('a', 'yellow', 1),
+      card('b', 'green', 3),
+      card('c', 'black', 11),
+    ]
+    const state = stubState({
+      hand,
+      tableMetlds: [runMeld],
+      phase: 'buy-window',
+      discardPile: [card('r9', 'red', 9)],
+      hasDrawnThisTurn: false,
+      players: [
+        player(0, hand),
+        player(1, [card('other1', 'red', 1)], { hasGoneDown: true }),
+        player(2, [card('other2', 'yellow', 2)]),
+      ],
     })
     expect(decideDraw(state)).toBe('deck')
   })

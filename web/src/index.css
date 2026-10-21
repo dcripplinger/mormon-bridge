@@ -73,16 +73,18 @@ button:disabled {
 }
 
 @keyframes ready-remind {
-  0%, 100% {
+  /* Two-second double pulse, then eight seconds of rest (10s cycle). */
+  0%, 10%, 20%, 100% {
     box-shadow: 0 0 0 0 rgba(232, 164, 34, 0);
     border-color: var(--border);
+    background: rgba(17, 34, 17, 0.92);
   }
-  7%, 16% {
-    border-color: #ffe08a;
-    background: rgba(72, 52, 10, 0.96);
+  5%, 15% {
+    border-color: #c9962e;
+    background: rgba(42, 36, 16, 0.94);
     box-shadow:
-      0 0 0 2px rgba(255, 224, 138, 0.95),
-      0 0 16px 3px rgba(232, 164, 34, 0.8);
+      0 0 0 1px rgba(232, 164, 34, 0.5),
+      0 0 8px 1px rgba(232, 164, 34, 0.35);
   }
 }
 
@@ -274,15 +276,14 @@ button:disabled {
 }
 
 .prep-pill--leader {
-  background: var(--accent);
-  color: #1a1408;
-  border-color: #ffe7a8;
-  box-shadow: 0 0 10px rgba(232, 164, 34, 0.55);
+  background: #3d5566;
+  color: #e7eef2;
+  border-color: #6d8796;
 }
 
 .prep-pill--waiting {
-  animation: ready-remind 8s ease-in-out infinite;
-  animation-delay: 4.5s;
+  animation: ready-remind 10s ease-in-out infinite;
+  animation-delay: 10s;
 }
 
 .table-action {
