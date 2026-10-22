@@ -7,6 +7,11 @@ export interface RoomClientHandlers {
   onStatus?: (status: RoomClientStatus) => void
 }
 
+export interface CloseOptions {
+  /** When true, do not emit a status change (intentional disconnect). */
+  silent?: boolean
+}
+
 /**
  * Thin WebSocket client for a private room. Transport only — no game logic.
  */
@@ -19,16 +24,20 @@ export class RoomClient {
   }
 
   connect(wsUrl: string): void {
-    this.close()
+    this.close({ silent: true })
     this.setStatus('connecting')
     const ws = new WebSocket(wsUrl)
     this.ws = ws
     ws.onopen = () => this.setStatus('open')
     ws.onclose = () => {
+      if (this.ws !== ws) return
       this.ws = null
       this.setStatus('closed')
     }
-    ws.onerror = () => this.setStatus('error')
+    ws.onerror = () => {
+      if (this.ws !== ws) return
+      this.setStatus('error')
+    }
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(String(ev.data)) as ServerMessage
@@ -44,16 +53,34 @@ export class RoomClient {
     this.ws.send(JSON.stringify(msg))
   }
 
-  close(): void {
-    if (this.ws) {
-      this.ws.close()
-      this.ws = null
+  close(opts?: CloseOptions): void {
+    const ws = this.ws
+    this.ws = null
+    if (ws) {
+      ws.onopen = null
+      ws.onclose = null
+      ws.onerror = null
+      ws.onmessage = null
+      try {
+        ws.close()
+      } catch {
+        /* ignore */
+      }
     }
-    this.setStatus('closed')
+    if (!opts?.silent) {
+      this.setStatus('closed')
+    }
   }
 
   private setStatus(status: RoomClientStatus): void {
     this.handlers.onStatus?.(status)
+  }
+}
+
+export class ApiUnreachableError extends Error {
+  constructor(message = 'Could not reach the game server') {
+    super(message)
+    this.name = 'ApiUnreachableError'
   }
 }
 
@@ -63,16 +90,59 @@ export async function createRoom(
   tableSize?: number,
 ): Promise<{ roomCode: string }> {
   const base = apiBase.replace(/\/$/, '')
-  const res = await fetch(`${base}/api/rooms`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tableSize }),
-  })
-  const body = await res.json() as { roomCode?: string; error?: string }
+  let res: Response
+  try {
+    res = await fetch(`${base}/api/rooms`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tableSize }),
+    })
+  } catch {
+    throw new ApiUnreachableError()
+  }
+
+  let body: { roomCode?: string; error?: string } = {}
+  try {
+    body = await res.json() as { roomCode?: string; error?: string }
+  } catch {
+    /* non-JSON (e.g. proxy 502 HTML) */
+  }
+
   if (!res.ok || !body.roomCode) {
+    if (res.status >= 500 || res.status === 0) {
+      throw new ApiUnreachableError()
+    }
     throw new Error(body.error ?? 'Could not create room')
   }
   return { roomCode: body.roomCode }
+}
+
+/**
+ * Lightweight reachability probe for the multiplayer Worker.
+ * Uses `/api/health` so the Vite `/api` proxy covers local wrangler.
+ */
+export async function checkApiReachable(
+  apiBase: string,
+  timeoutMs = 4000,
+): Promise<boolean> {
+  const base = apiBase.replace(/\/$/, '')
+  const url = `${base}/api/health`
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      signal: ctrl.signal,
+      cache: 'no-store',
+    })
+    if (!res.ok) return false
+    const body = await res.json() as { ok?: boolean }
+    return body.ok === true
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export function roomWebSocketUrl(apiBase: string, roomCode: string): string {

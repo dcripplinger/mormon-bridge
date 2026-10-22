@@ -99,11 +99,21 @@ Each turn proceeds in this order:
 
 #### Multiplayer local dev
 
+Default: local Vite + local Worker.
+
 ```bash
 npm install
 npm run dev:worker   # http://127.0.0.1:8787
 npm run dev:web      # http://localhost:5173 — proxies /api to the worker
 ```
+
+UI-only against the deployed Worker (no local wrangler):
+
+```bash
+npm run dev:web:remote   # loads web/.env.remote → VITE_API_BASE
+```
+
+If the multiplayer API is unreachable, the home screen disables Create/Join Online but Single Player still works. Losing the connection mid-online flow shows a blocking dialog and returns to the home screen.
 
 **Multiple clients in one browser**
 

@@ -14,7 +14,9 @@ npm run dev:worker   # wrangler on http://127.0.0.1:8787
 In another terminal:
 
 ```bash
-npm run dev:web      # Vite on http://localhost:5173 (proxies /api → 8787)
+npm run dev:web         # Vite on http://localhost:5173 (proxies /api → 8787)
+# or, UI against the deployed Worker:
+npm run dev:web:remote  # uses web/.env.remote
 ```
 
 ## Deploy (manual)

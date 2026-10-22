@@ -37,7 +37,10 @@ export default {
 
     const url = new URL(request.url)
 
-    if (request.method === 'GET' && url.pathname === '/health') {
+    if (
+      request.method === 'GET'
+      && (url.pathname === '/health' || url.pathname === '/api/health')
+    ) {
       return withCors(request, env, Response.json({ ok: true }))
     }
 

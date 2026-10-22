@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 import {
   DEFAULT_TABLE_SIZE,
   MAX_ROOM_PLAYERS,
@@ -40,7 +48,9 @@ import type { GameSettings } from './types'
 import { actionToClientMessage } from '../net/action-to-message'
 import { clientViewToGameState } from '../net/client-view-state'
 import {
+  ApiUnreachableError,
   RoomClient,
+  checkApiReachable,
   createRoom,
   defaultApiBase,
   roomWebSocketUrl,
@@ -170,8 +180,10 @@ export default function OnlineSession({
   const [ready, setReady] = useState(false)
   const [tableSize, setTableSize] = useState(DEFAULT_TABLE_SIZE)
   const [codeFeedback, setCodeFeedback] = useState<string | null>(null)
+  const [connectionLost, setConnectionLost] = useState(false)
 
   const clientRef = useRef<RoomClient | null>(null)
+  const connectionLostRef = useRef(false)
   const isGuestRef = useRef(isGuest)
   isGuestRef.current = isGuest
   const displayNameRef = useRef(displayName)
@@ -179,6 +191,14 @@ export default function OnlineSession({
   const avatarIdRef = useRef(avatarId)
   avatarIdRef.current = avatarId
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const reportConnectionLost = useCallback(() => {
+    if (connectionLostRef.current) return
+    connectionLostRef.current = true
+    clientRef.current?.close({ silent: true })
+    clientRef.current = null
+    setConnectionLost(true)
+  }, [])
 
   const showCodeFeedback = useCallback((message: string) => {
     setCodeFeedback(message)
@@ -239,7 +259,8 @@ export default function OnlineSession({
         if (msg.reason !== RECONNECTED_ELSEWHERE) {
           void clearReconnect(isGuestRef.current)
         }
-        clientRef.current?.close()
+        clientRef.current?.close({ silent: true })
+        clientRef.current = null
         setMode('menu')
         setRoom(null)
         setView(null)
@@ -247,6 +268,8 @@ export default function OnlineSession({
       case 'roomClosed':
         setError('Room closed')
         void clearReconnect(isGuestRef.current)
+        clientRef.current?.close({ silent: true })
+        clientRef.current = null
         setMode('menu')
         break
       default:
@@ -264,8 +287,9 @@ export default function OnlineSession({
     code: string,
     reconnectToken?: string,
   ) => {
+    if (connectionLostRef.current) return
     setError(null)
-    clientRef.current?.close()
+    clientRef.current?.close({ silent: true })
     const client = new RoomClient({
       onMessage: handleServerMessage,
       onStatus: (s) => {
@@ -276,19 +300,22 @@ export default function OnlineSession({
             avatarId: avatarIdRef.current,
             reconnectToken,
           })
+          return
         }
-        if (s === 'error') setError('Connection failed')
+        if (s === 'error' || s === 'closed') {
+          reportConnectionLost()
+        }
       },
     })
     clientRef.current = client
     client.connect(roomWebSocketUrl(apiBase, code))
-  }, [apiBase, handleServerMessage])
+  }, [apiBase, handleServerMessage, reportConnectionLost])
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
       const stored = await loadReconnect(isGuest)
-      if (cancelled || !stored) return
+      if (cancelled || !stored || connectionLostRef.current) return
       const deepLinkCode = initialRoomCode ? normalizeRoomCode(initialRoomCode) : ''
       // Deep link to a different room → show join form, do not auto-reconnect.
       if (deepLinkCode && deepLinkCode !== stored.roomCode) return
@@ -305,8 +332,35 @@ export default function OnlineSession({
   }, [])
 
   useEffect(() => () => {
-    clientRef.current?.close()
+    clientRef.current?.close({ silent: true })
+    clientRef.current = null
   }, [])
+
+  // Browser offline, or lost API while still on create/join menus.
+  useEffect(() => {
+    if (connectionLost) return
+    const onOffline = () => reportConnectionLost()
+    window.addEventListener('offline', onOffline)
+    return () => window.removeEventListener('offline', onOffline)
+  }, [connectionLost, reportConnectionLost])
+
+  useEffect(() => {
+    if (connectionLost || mode !== 'menu') return
+    let cancelled = false
+    const tick = async () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        if (!cancelled) reportConnectionLost()
+        return
+      }
+      const ok = await checkApiReachable(apiBase)
+      if (!cancelled && !ok) reportConnectionLost()
+    }
+    const id = window.setInterval(() => void tick(), 12_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [apiBase, connectionLost, mode, reportConnectionLost])
 
   const handleCreate = async () => {
     setError(null)
@@ -316,6 +370,10 @@ export default function OnlineSession({
       setRoomCode(code)
       connectAndJoinReliable(code)
     } catch (e) {
+      if (e instanceof ApiUnreachableError) {
+        reportConnectionLost()
+        return
+      }
       setError(e instanceof Error ? e.message : 'Create failed')
     }
   }
@@ -375,7 +433,8 @@ export default function OnlineSession({
 
   const leave = () => {
     clientRef.current?.send({ type: 'leave' })
-    clientRef.current?.close()
+    clientRef.current?.close({ silent: true })
+    clientRef.current = null
     void clearReconnect(isGuest)
     setMode('menu')
     setRoom(null)
@@ -395,8 +454,15 @@ export default function OnlineSession({
     [view],
   )
 
+  const withConnectionLost = (node: ReactNode) => (
+    <>
+      {node}
+      {connectionLost && <ConnectionLostModal onClose={onBack} />}
+    </>
+  )
+
   if (mode === 'playing' && shadowState && seatIndex !== null) {
-    return (
+    return withConnectionLost(
       <GameScreen
         initialState={shadowState}
         controlledState={shadowState}
@@ -408,7 +474,7 @@ export default function OnlineSession({
         onSave={() => {}}
         onGameEnd={() => {}}
         settings={settings}
-      />
+      />,
     )
   }
 
@@ -422,7 +488,7 @@ export default function OnlineSession({
       && humans.length >= 1
       && humans.every((s) => s.ready)
 
-    return (
+    return withConnectionLost(
       <div style={shellStyle}>
         <h1 style={{ margin: 0 }}>Room {room.roomCode}</h1>
         {isHost && (
@@ -563,14 +629,14 @@ export default function OnlineSession({
             </button>
           )}
         </div>
-      </div>
+      </div>,
     )
   }
 
   const isCreate = intent === 'create'
   const nameLabel = displayName.trim() || 'You'
 
-  return (
+  return withConnectionLost(
     <div style={shellStyle}>
       <h1 style={{ margin: 0 }}>
         {isCreate ? 'Create Online Game' : 'Join Online Game'}
@@ -676,7 +742,80 @@ export default function OnlineSession({
           onClose={() => setAvatarPickerOpen(false)}
         />
       )}
-    </div>
+    </div>,
+  )
+}
+
+function ConnectionLostModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="Dismiss connection lost dialog"
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.55)',
+          border: 'none',
+          padding: 0,
+          zIndex: 80,
+          cursor: 'pointer',
+        }}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Connection lost"
+        style={{
+          position: 'fixed',
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: 'min(360px, calc(100vw - 32px))',
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: '14px',
+          padding: '16px',
+          zIndex: 90,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '14px',
+          boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
+        }}
+      >
+        <div style={{ color: 'var(--text)', fontWeight: 700, fontSize: '1.05rem' }}>
+          Connection lost
+        </div>
+        <p style={{ margin: 0, color: 'var(--text-dim)', fontSize: '0.9rem', lineHeight: 1.4 }}>
+          Lost connection to the game server. You can keep playing single player, or try online
+          again when you are back online.
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            background: 'var(--accent)',
+            color: '#1a1a1a',
+            padding: '12px',
+            borderRadius: '8px',
+            fontSize: '1.05rem',
+            fontWeight: 'bold',
+            border: 'none',
+          }}
+        >
+          Return to menu
+        </button>
+      </div>
+    </>
   )
 }
 

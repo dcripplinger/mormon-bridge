@@ -21,6 +21,7 @@ import {
 import type { GameSettings, SeatDraft } from './app/types'
 import { createGame } from './game/state'
 import type { GameState, PlayerSetup } from './game/state'
+import { useApiReachable } from './net/use-api-reachable'
 
 type MenuView = 'home' | 'solo' | 'online'
 
@@ -33,6 +34,8 @@ function App() {
   const [menuView, setMenuView] = useState<MenuView>('home')
   const [onlineIntent, setOnlineIntent] = useState<OnlineIntent>('create')
   const [joinRoomCode, setJoinRoomCode] = useState<string | undefined>()
+  /** Join deep link waiting until the multiplayer API is reachable. */
+  const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(null)
 
   // The persisted game shown as "Continue" on the home screen.
   // Updated in-place by a ref during play to avoid causing re-renders.
@@ -44,11 +47,11 @@ function App() {
   const [initialSettings, setInitialSettings] = useState<GameSettings | null>(null)
   const [onlineProfile, setOnlineProfile] = useState<OnlineProfile | null>(null)
 
+  const { status: onlineStatus, recheck: recheckOnline } = useApiReachable()
+
   const openJoinWithCode = useCallback((code: string) => {
     setGameState(null)
-    setOnlineIntent('join')
-    setJoinRoomCode(code)
-    setMenuView('online')
+    setPendingJoinCode(code)
   }, [])
 
   // Boot: load prefs, active game, online profile, and any join deep link
@@ -73,15 +76,25 @@ function App() {
             // Web / unsupported — ignore
           }
         }
-        if (joinCode) {
-          setOnlineIntent('join')
-          setJoinRoomCode(joinCode)
-          setMenuView('online')
-        }
+        if (joinCode) setPendingJoinCode(joinCode)
         setLoading(false)
       },
     )
   }, [])
+
+  // Open a pending join only when the multiplayer API is reachable.
+  useEffect(() => {
+    if (!pendingJoinCode) return
+    if (onlineStatus === 'checking') return
+    if (onlineStatus === 'unavailable') {
+      setPendingJoinCode(null)
+      return
+    }
+    setOnlineIntent('join')
+    setJoinRoomCode(pendingJoinCode)
+    setMenuView('online')
+    setPendingJoinCode(null)
+  }, [pendingJoinCode, onlineStatus])
 
   // Warm start / resume: listen for app URL opens (custom scheme + App Links)
   useEffect(() => {
@@ -148,11 +161,19 @@ function App() {
   }, [])
 
   const openOnline = useCallback((intent: OnlineIntent) => {
+    if (onlineStatus !== 'available') return
     void refreshOnlineProfile()
     setOnlineIntent(intent)
     setJoinRoomCode(undefined)
     setMenuView('online')
-  }, [refreshOnlineProfile])
+  }, [onlineStatus, refreshOnlineProfile])
+
+  const returnHomeFromOnline = useCallback(() => {
+    setJoinRoomCode(undefined)
+    setMenuView('home')
+    void refreshOnlineProfile()
+    recheckOnline()
+  }, [recheckOnline, refreshOnlineProfile])
 
   if (loading) return null
 
@@ -162,11 +183,7 @@ function App() {
         key={`${onlineIntent}:${joinRoomCode ?? ''}`}
         intent={onlineIntent}
         initialRoomCode={joinRoomCode}
-        onBack={() => {
-          setJoinRoomCode(undefined)
-          setMenuView('home')
-          void refreshOnlineProfile()
-        }}
+        onBack={returnHomeFromOnline}
         settings={initialSettings ?? undefined}
         defaultDisplayName={onlineProfile?.displayName}
         defaultAvatarId={
@@ -207,6 +224,7 @@ function App() {
       onQuit={handleQuit}
       onCreateOnline={() => openOnline('create')}
       onJoinOnline={() => openOnline('join')}
+      onlineStatus={onlineStatus}
     />
   )
 }

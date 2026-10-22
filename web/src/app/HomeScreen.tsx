@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import type { GameState } from '../game/state'
+import type { ApiReachability } from '../net/use-api-reachable'
 
 interface Props {
   activeGame: GameState | null
@@ -8,6 +9,8 @@ interface Props {
   onQuit: () => void
   onCreateOnline: () => void
   onJoinOnline: () => void
+  /** Multiplayer API reachability; online buttons stay off until available. */
+  onlineStatus: ApiReachability
 }
 
 export default function HomeScreen({
@@ -17,6 +20,7 @@ export default function HomeScreen({
   onQuit,
   onCreateOnline,
   onJoinOnline,
+  onlineStatus,
 }: Props) {
   const [continueOpen, setContinueOpen] = useState(false)
 
@@ -42,6 +46,14 @@ export default function HomeScreen({
     onQuit()
     onSoloSetup()
   }
+
+  const onlineEnabled = onlineStatus === 'available'
+  const onlineHint =
+    onlineStatus === 'unavailable'
+      ? 'Online play unavailable. Check your connection and try again.'
+      : onlineStatus === 'checking'
+        ? 'Checking online play…'
+        : null
 
   return (
     <div
@@ -81,12 +93,35 @@ export default function HomeScreen({
         <button type="button" onClick={handleSinglePlayer} style={primaryButtonStyle}>
           Single Player
         </button>
-        <button type="button" onClick={onCreateOnline} style={primaryButtonStyle}>
+        <button
+          type="button"
+          onClick={onCreateOnline}
+          disabled={!onlineEnabled}
+          style={onlineEnabled ? primaryButtonStyle : disabledButtonStyle}
+        >
           Create Online Game
         </button>
-        <button type="button" onClick={onJoinOnline} style={primaryButtonStyle}>
+        <button
+          type="button"
+          onClick={onJoinOnline}
+          disabled={!onlineEnabled}
+          style={onlineEnabled ? primaryButtonStyle : disabledButtonStyle}
+        >
           Join Online Game
         </button>
+        {onlineHint && (
+          <p
+            style={{
+              margin: 0,
+              color: 'var(--text-dim)',
+              fontSize: '0.85rem',
+              lineHeight: 1.4,
+              textAlign: 'center',
+            }}
+          >
+            {onlineHint}
+          </p>
+        )}
       </div>
 
       {continueOpen && (
@@ -209,4 +244,10 @@ const secondaryButtonStyle: CSSProperties = {
   borderRadius: '8px',
   fontSize: '0.95rem',
   fontWeight: 600,
+}
+
+const disabledButtonStyle: CSSProperties = {
+  ...primaryButtonStyle,
+  opacity: 0.45,
+  cursor: 'not-allowed',
 }
