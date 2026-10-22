@@ -8,6 +8,7 @@ interface ScoreBoardProps {
   roundIndex: number
   open: boolean
   onClose: () => void
+  onLeaveGame: () => void
 }
 
 export default function ScoreBoard({
@@ -16,6 +17,7 @@ export default function ScoreBoard({
   roundIndex,
   open,
   onClose,
+  onLeaveGame,
 }: ScoreBoardProps) {
   useEffect(() => {
     if (!open) return
@@ -98,35 +100,64 @@ export default function ScoreBoard({
           </button>
         </div>
 
-        {players.map((p) => (
-          <div
-            key={p.index}
-            style={{
-              padding: '8px 10px',
-              borderRadius: '6px',
-              background: p.index === currentPlayerIndex ? 'var(--surface-2)' : undefined,
-              border:
-                p.index === currentPlayerIndex
-                  ? '1px solid var(--accent-dim)'
-                  : '1px solid transparent',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-            }}
-          >
-            <AvatarView avatarId={p.avatarId} size={36} alt="" />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ color: 'var(--text)' }}>
-                {p.displayName}
-                {p.isAI ? ' · bot' : ''}
-                {p.hasGoneDown ? ' ✓' : ''}
-              </div>
-              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginTop: '2px' }}>
-                {p.hand.length} cards · {p.cumulativeScore} pts
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+          }}
+        >
+          {players.map((p) => (
+            <div
+              key={p.index}
+              style={{
+                padding: '8px 10px',
+                borderRadius: '6px',
+                background: p.index === currentPlayerIndex ? 'var(--surface-2)' : undefined,
+                border:
+                  p.index === currentPlayerIndex
+                    ? '1px solid var(--accent-dim)'
+                    : '1px solid transparent',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+              }}
+            >
+              <AvatarView avatarId={p.avatarId} size={36} alt="" />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: 'var(--text)' }}>
+                  {p.displayName}
+                  {p.isAI ? ' · bot' : ''}
+                  {p.hasGoneDown ? ' ✓' : ''}
+                </div>
+                <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem', marginTop: '2px' }}>
+                  {p.hand.length} cards · {p.cumulativeScore} pts
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={onLeaveGame}
+          style={{
+            marginTop: 'auto',
+            background: 'var(--surface-2)',
+            color: 'var(--text)',
+            border: '1px solid var(--border)',
+            borderRadius: '8px',
+            padding: '12px',
+            fontSize: '0.95rem',
+            fontWeight: 600,
+            width: '100%',
+          }}
+        >
+          Leave game
+        </button>
       </aside>
 
       <style>{`

@@ -169,7 +169,7 @@ const SetFan = forwardRef<HTMLDivElement, SetFanProps>(function SetFan({
         outline: selected ? '2px solid var(--accent)' : 'none',
         outlineOffset: 2,
         boxShadow: selected
-          ? '0 0 0 3px var(--accent), 0 0 16px rgba(232, 164, 34, 0.75)'
+          ? '0 0 0 3px var(--accent), 0 0 16px rgba(var(--accent-rgb), 0.75)'
           : 'none',
       }}
     >
@@ -182,7 +182,7 @@ const SetFan = forwardRef<HTMLDivElement, SetFanProps>(function SetFan({
             width: '48%',
             left: activeEnd === 'left' ? 0 : undefined,
             right: activeEnd === 'right' ? 0 : undefined,
-            background: 'rgba(232, 164, 34, 0.38)',
+            background: 'rgba(var(--accent-rgb), 0.38)',
             borderRadius: cardRadius,
             pointerEvents: 'none',
             zIndex: 30,

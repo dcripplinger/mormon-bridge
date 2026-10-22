@@ -53,51 +53,38 @@ export default function HomeScreen({
         height: '100%',
         gap: '28px',
         background: 'var(--bg)',
-        padding: '20px 16px',
+        padding: '20px 28px',
       }}
     >
-      <div style={{ textAlign: 'center' }}>
-        <h1
-          style={{
-            margin: 0,
-            color: 'var(--text)',
-            fontSize: '1.85rem',
-            fontWeight: 700,
-            letterSpacing: '-0.02em',
-          }}
-        >
-          Mormon Bridge
-        </h1>
-        <p
-          style={{
-            margin: '8px 0 0',
-            color: 'var(--text-dim)',
-            fontSize: '0.95rem',
-          }}
-        >
-          Pick how you want to play
-        </p>
-      </div>
+      <h1
+        style={{
+          margin: 0,
+          color: 'var(--text)',
+          fontSize: '1.85rem',
+          fontWeight: 700,
+          letterSpacing: '-0.02em',
+          textAlign: 'center',
+        }}
+      >
+        Mormon Bridge
+      </h1>
 
       <div
         style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          borderRadius: '16px',
-          padding: '16px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '10px',
+          gap: '36px',
           width: 'min(360px, 100%)',
+          boxSizing: 'border-box',
         }}
       >
         <button type="button" onClick={handleSinglePlayer} style={primaryButtonStyle}>
           Single Player
         </button>
-        <button type="button" onClick={onCreateOnline} style={secondaryButtonStyle}>
+        <button type="button" onClick={onCreateOnline} style={primaryButtonStyle}>
           Create Online Game
         </button>
-        <button type="button" onClick={onJoinOnline} style={secondaryButtonStyle}>
+        <button type="button" onClick={onJoinOnline} style={primaryButtonStyle}>
           Join Online Game
         </button>
       </div>

@@ -175,7 +175,7 @@ function PrepSlotBox({
           ? '2px solid var(--accent)'
           : '2px dashed rgba(255,255,255,0.18)',
         background: isHighlighted
-          ? 'rgba(232,164,34,0.10)'
+          ? 'rgba(var(--accent-rgb), 0.10)'
           : 'rgba(255,255,255,0.04)',
         flex: '1 1 170px',
         maxWidth: SLOT_PRE_WIDTH + 24,

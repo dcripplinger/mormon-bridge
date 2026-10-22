@@ -1477,9 +1477,9 @@ export default function GameScreen({
                   margin: '-6px',
                   borderRadius: '10px',
                   transition: 'box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease',
-                  background: discardHot ? 'rgba(232, 164, 34, 0.18)' : 'transparent',
+                  background: discardHot ? 'rgba(var(--accent-rgb), 0.18)' : 'transparent',
                   boxShadow: discardHot
-                    ? '0 0 0 3px var(--accent), 0 0 22px rgba(232, 164, 34, 0.45)'
+                    ? '0 0 0 3px var(--accent), 0 0 22px rgba(var(--accent-rgb), 0.45)'
                     : 'none',
                   transform: discardHot ? 'scale(1.06)' : 'scale(1)',
                 }}
@@ -1796,6 +1796,10 @@ export default function GameScreen({
         roundIndex={state.roundIndex}
         open={scoresOpen}
         onClose={() => setScoresOpen(false)}
+        onLeaveGame={() => {
+          setScoresOpen(false)
+          onReturnToMenu()
+        }}
       />
 
       {activeFlightItem && (
