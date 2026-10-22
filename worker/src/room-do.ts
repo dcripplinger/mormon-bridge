@@ -78,7 +78,7 @@ export class RoomDurableObject implements DurableObject {
     if (this.runtime) {
       return Response.json({ error: 'Room already exists' }, { status: 409 })
     }
-    let body: { password?: string; roomCode?: string }
+    let body: { password?: string; roomCode?: string; tableSize?: number }
     try {
       body = await request.json()
     } catch {
@@ -92,11 +92,12 @@ export class RoomDurableObject implements DurableObject {
     if (code.length < 4) {
       return Response.json({ error: 'Invalid room code' }, { status: 400 })
     }
+    const tableSize = typeof body.tableSize === 'number' ? body.tableSize : undefined
 
-    this.runtime = await HostRuntime.create(code, password)
+    this.runtime = await HostRuntime.create(code, password, undefined, tableSize)
     this.attachSink()
     await this.persist()
-    await this.state.storage.setAlarm(Date.now() + 15_000)
+    await this.scheduleWake()
 
     return Response.json({ roomCode: code })
   }
@@ -141,6 +142,7 @@ export class RoomDurableObject implements DurableObject {
 
     await this.runtime.onMessage(sessionId, msg)
     await this.persist()
+    await this.scheduleWake()
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
@@ -150,6 +152,7 @@ export class RoomDurableObject implements DurableObject {
     this.attachSink()
     this.runtime.onDisconnect(sessionId)
     await this.persist()
+    await this.scheduleWake()
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
@@ -193,5 +196,10 @@ export class RoomDurableObject implements DurableObject {
   private async persist(): Promise<void> {
     if (!this.runtime) return
     await this.state.storage.put(STORAGE_KEY, this.runtime.serialize())
+  }
+
+  private async scheduleWake(): Promise<void> {
+    if (!this.runtime) return
+    await this.state.storage.setAlarm(Date.now() + this.runtime.wakeDelayMs())
   }
 }

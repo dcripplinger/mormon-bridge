@@ -15,6 +15,7 @@ import {
   type GameState,
   type PlayerSetup,
 } from '../../web/src/game/state'
+import { decideBuy, runAIStep } from '../../web/src/game/ai'
 import { DEFAULT_WILD_RULES } from '../../web/src/game/meld-play'
 import { hashPassword, randomSaltHex, verifyPassword } from './password'
 import type {
@@ -29,12 +30,20 @@ import { generateReconnectToken } from './reconnect-token'
 
 export const MIN_ROOM_PLAYERS = 3
 export const MAX_ROOM_PLAYERS = 5
+/** Default lobby size when a room is created. */
+export const DEFAULT_TABLE_SIZE = MIN_ROOM_PLAYERS
 /** Auto-act if the current seat is silent this long. */
 export const DEFAULT_IDLE_TIMEOUT_MS = 90_000
 /** Max client messages accepted per seat per rolling second. */
 export const DEFAULT_RATE_LIMIT_PER_SEC = 12
 /** Close room after sitting empty this long. */
 export const DEFAULT_EMPTY_ROOM_MS = 30 * 60_000
+/** Delay between host-driven AI steps while a bot should act. */
+export const DEFAULT_AI_TICK_MS = 500
+/** Periodic wake when nothing urgent is pending. */
+export const DEFAULT_IDLE_ALARM_MS = 15_000
+
+const BOT_AVATAR_IDS = ['b01', 'b02', 'b03', 'b04', 'b05', 'b06', 'b07', 'b08'] as const
 
 export interface HostSink {
   send(sessionId: string, msg: ServerMessage): void
@@ -52,6 +61,7 @@ interface SeatRecord {
   reconnectToken: string
   sessionId: string | null
   isAI: boolean
+  isOpen: boolean
 }
 
 export interface HostRuntimeSnapshot {
@@ -59,6 +69,7 @@ export interface HostRuntimeSnapshot {
   passwordSalt: string
   passwordHash: string
   phase: RoomPhase
+  tableSize: number
   seats: SeatRecord[]
   hostSeatIndex: number | null
   game: GameState | null
@@ -75,6 +86,8 @@ export interface HostRuntimeOptions {
   idleTimeoutMs?: number
   rateLimitPerSec?: number
   emptyRoomMs?: number
+  aiTickMs?: number
+  tableSize?: number
   /** Seeded snapshot restore. */
   snapshot?: Omit<HostRuntimeSnapshot, 'roomCode' | 'passwordSalt' | 'passwordHash'>
 }
@@ -91,8 +104,10 @@ export class HostRuntime {
   private readonly idleTimeoutMs: number
   private readonly rateLimitPerSec: number
   private readonly emptyRoomMs: number
+  private readonly aiTickMs: number
 
   private phase: RoomPhase = 'lobby'
+  private tableSize: number = DEFAULT_TABLE_SIZE
   private seats: SeatRecord[] = []
   private hostSeatIndex: number | null = null
   private game: GameState | null = null
@@ -112,22 +127,39 @@ export class HostRuntime {
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
     this.rateLimitPerSec = opts.rateLimitPerSec ?? DEFAULT_RATE_LIMIT_PER_SEC
     this.emptyRoomMs = opts.emptyRoomMs ?? DEFAULT_EMPTY_ROOM_MS
+    this.aiTickMs = opts.aiTickMs ?? DEFAULT_AI_TICK_MS
     const t = this.now()
     this.lastActivityMs = t
     this.lastSeatActionMs = t
     this.createdAtMs = t
     if (opts.snapshot) {
       this.phase = opts.snapshot.phase
-      this.seats = opts.snapshot.seats.map((s) => ({ ...s, sessionId: null }))
+      this.tableSize = clampTableSize(
+        opts.snapshot.tableSize ?? opts.snapshot.seats.length ?? DEFAULT_TABLE_SIZE,
+      )
+      this.seats = opts.snapshot.seats.map((s) => ({
+        ...s,
+        sessionId: null,
+        isOpen: s.isOpen ?? false,
+      }))
+      this.ensureLobbySlots()
       this.hostSeatIndex = opts.snapshot.hostSeatIndex
       this.game = opts.snapshot.game
       this.lastActivityMs = opts.snapshot.lastActivityMs
       this.lastSeatActionMs = opts.snapshot.lastSeatActionMs
       this.createdAtMs = opts.snapshot.createdAtMs
+    } else {
+      this.tableSize = clampTableSize(opts.tableSize ?? DEFAULT_TABLE_SIZE)
+      this.seats = makeOpenSeats(this.tableSize)
     }
   }
 
-  static async create(roomCode: string, password: string, now?: () => number): Promise<HostRuntime> {
+  static async create(
+    roomCode: string,
+    password: string,
+    now?: () => number,
+    tableSize?: number,
+  ): Promise<HostRuntime> {
     const salt = await randomSaltHex()
     const hash = await hashPassword(password, salt)
     return new HostRuntime({
@@ -135,6 +167,7 @@ export class HostRuntime {
       passwordSalt: salt,
       passwordHash: hash,
       now,
+      tableSize,
     })
   }
 
@@ -148,6 +181,7 @@ export class HostRuntime {
       passwordSalt: this.passwordSalt,
       passwordHash: this.passwordHash,
       phase: this.phase,
+      tableSize: this.tableSize,
       seats: this.seats.map((s) => ({ ...s })),
       hostSeatIndex: this.hostSeatIndex,
       game: this.game,
@@ -201,6 +235,15 @@ export class HostRuntime {
       case 'startGame':
         this.handleStartGame(seat)
         return
+      case 'setTableSize':
+        this.handleSetTableSize(seat, msg.tableSize)
+        return
+      case 'addBot':
+        this.handleAddBot(seat)
+        return
+      case 'removeBot':
+        this.handleRemoveBot(seat)
+        return
       default:
         this.handlePlay(sessionId, seat, msg)
     }
@@ -229,12 +272,20 @@ export class HostRuntime {
     }
 
     if (this.phase === 'playing' && this.game) {
-      if (t - this.lastSeatActionMs >= this.idleTimeoutMs) {
+      if (this.needsAiTick()) {
+        this.runAiTick()
+      } else if (t - this.lastSeatActionMs >= this.idleTimeoutMs) {
         this.applyIdleAction()
       }
     }
 
-    return Math.min(15_000, this.idleTimeoutMs)
+    return this.wakeDelayMs()
+  }
+
+  /** Suggested delay until the next transport alarm wake. */
+  wakeDelayMs(): number {
+    if (this.phase === 'playing' && this.needsAiTick()) return this.aiTickMs
+    return Math.min(DEFAULT_IDLE_ALARM_MS, this.idleTimeoutMs)
   }
 
   roomPublicState(): RoomPublicState {
@@ -245,10 +296,12 @@ export class HostRuntime {
         seatIndex: s.seatIndex,
         displayName: s.displayName,
         avatarId: s.avatarId,
-        ready: s.ready,
+        ready: s.isAI ? true : s.ready,
         connected: s.sessionId !== null,
         isAI: s.isAI,
+        isOpen: s.isOpen,
       })),
+      tableSize: this.tableSize,
       minPlayers: MIN_ROOM_PLAYERS,
       maxPlayers: MAX_ROOM_PLAYERS,
       hostSeatIndex: this.hostSeatIndex,
@@ -269,6 +322,10 @@ export class HostRuntime {
 
   private connectedCount(): number {
     return this.seats.filter((s) => s.sessionId !== null).length
+  }
+
+  private humanSeats(): SeatRecord[] {
+    return this.seats.filter((s) => !s.isOpen && !s.isAI)
   }
 
   private allowRate(sessionId: string): boolean {
@@ -314,6 +371,64 @@ export class HostRuntime {
     })
   }
 
+  private ensureLobbySlots(): void {
+    if (this.phase !== 'lobby') return
+    if (this.seats.length < this.tableSize) {
+      const start = this.seats.length
+      this.seats = [
+        ...this.seats,
+        ...makeOpenSeats(this.tableSize - this.seats.length).map((s, i) => ({
+          ...s,
+          seatIndex: start + i,
+        })),
+      ]
+    } else if (this.seats.length > this.tableSize) {
+      this.seats = this.seats.slice(0, this.tableSize).map((s, i) => ({ ...s, seatIndex: i }))
+    } else {
+      this.seats = this.seats.map((s, i) => ({ ...s, seatIndex: i }))
+    }
+  }
+
+  private reassignHost(): void {
+    const humans = this.humanSeats()
+    this.hostSeatIndex = humans.length > 0 ? humans[0].seatIndex : null
+  }
+
+  private claimableSeat(): SeatRecord | undefined {
+    return this.seats.find((s) => s.isOpen) ?? this.seats.find((s) => s.isAI)
+  }
+
+  private takenAvatarIds(): string[] {
+    return this.seats.filter((s) => !s.isOpen).map((s) => s.avatarId)
+  }
+
+  private nextBotName(): string {
+    const n = this.seats.filter((s) => s.isAI).length + 1
+    return `Bot ${n}`
+  }
+
+  private fillSeatAsBot(seat: SeatRecord): void {
+    const name = this.nextBotName()
+    const avatarId = pickBotAvatar(this.takenAvatarIds())
+    seat.isOpen = false
+    seat.isAI = true
+    seat.ready = true
+    seat.sessionId = null
+    seat.reconnectToken = ''
+    seat.displayName = name
+    seat.avatarId = avatarId
+  }
+
+  private clearSeatToOpen(seat: SeatRecord): void {
+    seat.isOpen = true
+    seat.isAI = false
+    seat.ready = false
+    seat.sessionId = null
+    seat.reconnectToken = ''
+    seat.displayName = ''
+    seat.avatarId = ''
+  }
+
   private async handleJoin(
     sessionId: string,
     msg: Extract<ClientMessage, { type: 'join' }>,
@@ -331,7 +446,7 @@ export class HostRuntime {
 
     if (msg.reconnectToken) {
       const existing = this.seats.find((s) => s.reconnectToken === msg.reconnectToken)
-      if (existing) {
+      if (existing && !existing.isOpen) {
         if (existing.sessionId && existing.sessionId !== sessionId) {
           this.send(existing.sessionId, { type: 'kicked', reason: 'Reconnected elsewhere' })
         }
@@ -357,29 +472,38 @@ export class HostRuntime {
       return
     }
 
-    if (this.seats.length >= MAX_ROOM_PLAYERS) {
+    const already = this.seatBySession(sessionId)
+    if (already) {
+      this.send(sessionId, {
+        type: 'joined',
+        seatIndex: already.seatIndex,
+        reconnectToken: already.reconnectToken,
+        roomCode: this.roomCode,
+      })
+      this.broadcastRoom()
+      return
+    }
+
+    const seat = this.claimableSeat()
+    if (!seat) {
       this.send(sessionId, { type: 'error', message: 'Room is full' })
       return
     }
 
-    const name = msg.displayName.trim() || `Player ${this.seats.length + 1}`
-    const seatIndex = this.seats.length
+    const name = msg.displayName.trim() || `Player ${seat.seatIndex + 1}`
     const token = generateReconnectToken()
-    const seat: SeatRecord = {
-      seatIndex,
-      displayName: name,
-      avatarId: msg.avatarId || 'human-1',
-      ready: false,
-      reconnectToken: token,
-      sessionId,
-      isAI: false,
-    }
-    this.seats.push(seat)
-    if (this.hostSeatIndex === null) this.hostSeatIndex = seatIndex
+    seat.isOpen = false
+    seat.isAI = false
+    seat.displayName = name
+    seat.avatarId = msg.avatarId || 'h01'
+    seat.ready = false
+    seat.reconnectToken = token
+    seat.sessionId = sessionId
+    if (this.hostSeatIndex === null) this.hostSeatIndex = seat.seatIndex
 
     this.send(sessionId, {
       type: 'joined',
-      seatIndex,
+      seatIndex: seat.seatIndex,
       reconnectToken: token,
       roomCode: this.roomCode,
     })
@@ -392,16 +516,14 @@ export class HostRuntime {
       this.broadcastRoom()
       return
     }
-    this.seats = this.seats
-      .filter((s) => s.seatIndex !== seat.seatIndex)
-      .map((s, i) => ({ ...s, seatIndex: i }))
-    // Lobby host is always the lowest seat (creator tends to be seat 0).
-    this.hostSeatIndex = this.seats.length > 0 ? 0 : null
+    this.clearSeatToOpen(seat)
+    this.reassignHost()
     this.send(sessionId, { type: 'kicked', reason: 'Left the room' })
     this.broadcastRoom()
   }
 
   private handleSetReady(seat: SeatRecord, ready: boolean): void {
+    if (seat.isOpen || seat.isAI) return
     if (this.phase === 'lobby') {
       seat.ready = ready
       this.broadcastRoom()
@@ -413,6 +535,113 @@ export class HostRuntime {
         this.commitGame(revealOpeningDiscard(this.game))
       }
     }
+  }
+
+  private handleSetTableSize(seat: SeatRecord, tableSize: number): void {
+    if (this.phase !== 'lobby') {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'Game already started' })
+      }
+      return
+    }
+    if (seat.seatIndex !== this.hostSeatIndex) {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'Only the host can change table size' })
+      }
+      return
+    }
+    if (!Number.isInteger(tableSize) || tableSize < MIN_ROOM_PLAYERS || tableSize > MAX_ROOM_PLAYERS) {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, {
+          type: 'error',
+          message: `Table size must be ${MIN_ROOM_PLAYERS}–${MAX_ROOM_PLAYERS}`,
+        })
+      }
+      return
+    }
+    if (tableSize === this.tableSize) return
+
+    if (tableSize > this.tableSize) {
+      const extra = makeOpenSeats(tableSize - this.tableSize).map((s, i) => ({
+        ...s,
+        seatIndex: this.tableSize + i,
+      }))
+      this.seats = [...this.seats, ...extra]
+      this.tableSize = tableSize
+      this.broadcastRoom()
+      return
+    }
+
+    for (let i = this.tableSize - 1; i >= tableSize; i--) {
+      const s = this.seats[i]
+      if (!s.isOpen && !s.isAI) {
+        if (seat.sessionId) {
+          this.send(seat.sessionId, {
+            type: 'error',
+            message: 'Cannot shrink: a player is in a seat that would be removed',
+          })
+        }
+        return
+      }
+    }
+    this.seats = this.seats.slice(0, tableSize).map((s, i) => ({ ...s, seatIndex: i }))
+    this.tableSize = tableSize
+    this.reassignHost()
+    this.broadcastRoom()
+  }
+
+  private handleAddBot(seat: SeatRecord): void {
+    if (this.phase !== 'lobby') {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'Game already started' })
+      }
+      return
+    }
+    if (seat.seatIndex !== this.hostSeatIndex) {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'Only the host can add bots' })
+      }
+      return
+    }
+    const open = this.seats.find((s) => s.isOpen)
+    if (!open) {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'No open seats' })
+      }
+      return
+    }
+    this.fillSeatAsBot(open)
+    this.broadcastRoom()
+  }
+
+  private handleRemoveBot(seat: SeatRecord): void {
+    if (this.phase !== 'lobby') {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'Game already started' })
+      }
+      return
+    }
+    if (seat.seatIndex !== this.hostSeatIndex) {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'Only the host can remove bots' })
+      }
+      return
+    }
+    let bot: SeatRecord | undefined
+    for (let i = this.seats.length - 1; i >= 0; i--) {
+      if (this.seats[i].isAI) {
+        bot = this.seats[i]
+        break
+      }
+    }
+    if (!bot) {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'No bots to remove' })
+      }
+      return
+    }
+    this.clearSeatToOpen(bot)
+    this.broadcastRoom()
   }
 
   private handleStartGame(seat: SeatRecord): void {
@@ -428,20 +657,32 @@ export class HostRuntime {
       }
       return
     }
-    if (this.seats.length < MIN_ROOM_PLAYERS) {
+    if (this.tableSize < MIN_ROOM_PLAYERS) {
       if (seat.sessionId) {
         this.send(seat.sessionId, {
           type: 'error',
-          message: `Need at least ${MIN_ROOM_PLAYERS} players`,
+          message: `Need at least ${MIN_ROOM_PLAYERS} seats`,
         })
       }
       return
     }
-    if (!this.seats.every((s) => s.ready)) {
+    const humans = this.humanSeats()
+    if (humans.length < 1) {
+      if (seat.sessionId) {
+        this.send(seat.sessionId, { type: 'error', message: 'Need at least one human player' })
+      }
+      return
+    }
+    if (!humans.every((s) => s.ready)) {
       if (seat.sessionId) {
         this.send(seat.sessionId, { type: 'error', message: 'All players must be ready' })
       }
       return
+    }
+
+    // Empty slots become bots at start.
+    for (const s of this.seats) {
+      if (s.isOpen) this.fillSeatAsBot(s)
     }
 
     const setups: PlayerSetup[] = this.seats.map((s) => ({
@@ -449,9 +690,7 @@ export class HostRuntime {
       isAI: s.isAI,
       avatarId: s.avatarId,
     }))
-    this.game = createGame(setups, { roundLeaderIndex: 0 })
-    // Lobby ready already satisfied; mark round-prep ready so opening can proceed
-    // via per-seat setReady during round-prep (hands just dealt).
+    this.game = createGame(setups, { roundLeaderIndex: 0, shuffleSeats: false })
     this.phase = 'playing'
     this.touchSeatAction()
     this.broadcastRoom()
@@ -531,7 +770,6 @@ export class HostRuntime {
         next = reorderHand(g, seat.seatIndex, msg.orderedIds)
         break
       case 'revealOpening':
-        // Only used if all ready without auto-reveal path
         if (!g.ready.every(Boolean)) {
           this.send(sessionId, { type: 'error', message: 'Not everyone is ready' })
           return
@@ -542,6 +780,9 @@ export class HostRuntime {
       case 'join':
       case 'leave':
       case 'startGame':
+      case 'setTableSize':
+      case 'addBot':
+      case 'removeBot':
         return
       default:
         this.send(sessionId, { type: 'error', message: 'Unknown action' })
@@ -560,9 +801,33 @@ export class HostRuntime {
     this.game = next
     this.touchSeatAction()
     this.broadcastViews()
-    if (next.phase === 'game-end') {
-      // Keep phase playing until clients leave; room stays open for rematch later
+  }
+
+  private needsAiTick(): boolean {
+    if (this.phase !== 'playing' || !this.game) return false
+    const g = this.game
+    if (g.phase === 'game-end' || g.phase === 'round-end') return false
+    if (g.phase === 'round-prep') {
+      return g.players.some((p) => p.isAI && !g.ready[p.index])
     }
+    if (g.phase === 'buy-window') {
+      const current = g.players[g.currentPlayerIndex]
+      if (current?.isAI) return true
+      return g.players.some((p) => p.isAI && decideBuy(g, p.index))
+    }
+    if (g.phase === 'draw' || g.phase === 'play-or-discard') {
+      return g.players[g.currentPlayerIndex]?.isAI === true
+    }
+    return false
+  }
+
+  private runAiTick(): void {
+    if (!this.game) return
+    const before = this.game
+    const next = runAIStep(before)
+    if (next === before) return
+    if (next.lastError) return
+    this.commitGame(next)
   }
 
   private applyIdleAction(): void {
@@ -573,9 +838,8 @@ export class HostRuntime {
     if (g.phase === 'round-prep') {
       let s = g
       if (!s.ready[seat]) s = setReady(s, seat, true)
-      // Also ready any disconnected seats
       for (const rec of this.seats) {
-        if (!rec.sessionId && !s.ready[rec.seatIndex]) {
+        if (!rec.sessionId && !rec.isAI && !s.ready[rec.seatIndex]) {
           s = setReady(s, rec.seatIndex, true)
         }
       }
@@ -601,4 +865,31 @@ export class HostRuntime {
       this.commitGame(continueAfterRound(g))
     }
   }
+}
+
+function clampTableSize(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_TABLE_SIZE
+  return Math.min(MAX_ROOM_PLAYERS, Math.max(MIN_ROOM_PLAYERS, Math.round(n)))
+}
+
+function makeOpenSeats(count: number): SeatRecord[] {
+  const seats: SeatRecord[] = []
+  for (let i = 0; i < count; i++) {
+    seats.push({
+      seatIndex: i,
+      displayName: '',
+      avatarId: '',
+      ready: false,
+      reconnectToken: '',
+      sessionId: null,
+      isAI: false,
+      isOpen: true,
+    })
+  }
+  return seats
+}
+
+function pickBotAvatar(taken: string[]): string {
+  const set = new Set(taken)
+  return BOT_AVATAR_IDS.find((id) => !set.has(id)) ?? BOT_AVATAR_IDS[0]
 }

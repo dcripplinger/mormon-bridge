@@ -117,7 +117,12 @@ export interface GameState {
 
 export function createGame(
   setups: PlayerSetup[],
-  options: { rng?: () => number; roundLeaderIndex?: number } = {},
+  options: {
+    rng?: () => number
+    roundLeaderIndex?: number
+    /** When false, keep setup order (required for online seat identity). Default true. */
+    shuffleSeats?: boolean
+  } = {},
 ): GameState {
   const numPlayers = setups.length
   if (numPlayers < 3 || numPlayers > 5) {
@@ -134,7 +139,9 @@ export function createGame(
     roundScores: [],
   }))
   const rng = options.rng ?? Math.random
-  const seated = shuffleSeatOrder(players, rng)
+  const seated = options.shuffleSeats === false
+    ? players
+    : shuffleSeatOrder(players, rng)
   const rolled = options.roundLeaderIndex ?? pickRoundLeader(numPlayers, rng)
   const roundLeaderIndex = normalizeLeader(rolled, numPlayers)
   return startRound({ players: seated, roundIndex: 0, meldIdCounter: 0, roundLeaderIndex })

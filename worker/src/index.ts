@@ -43,7 +43,7 @@ export default {
 
     // Create a new private room (password required).
     if (request.method === 'POST' && url.pathname === '/api/rooms') {
-      let body: { password?: string }
+      let body: { password?: string; tableSize?: number }
       try {
         body = await request.json()
       } catch {
@@ -61,6 +61,7 @@ export default {
           Response.json({ error: 'Password must be at least 4 characters' }, { status: 400 }),
         )
       }
+      const tableSize = typeof body.tableSize === 'number' ? body.tableSize : undefined
 
       // Retry a few times on the unlikely code collision with an existing DO that already has state.
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -69,7 +70,7 @@ export default {
         const res = await stub.fetch(new Request('https://room/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password, roomCode }),
+          body: JSON.stringify({ password, roomCode, tableSize }),
         }))
         if (res.status === 409) continue
         return withCors(request, env, res)

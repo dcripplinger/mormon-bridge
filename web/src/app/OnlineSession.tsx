@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type {
-  ClientView,
-  RoomPublicState,
-  ServerMessage,
+import {
+  DEFAULT_TABLE_SIZE,
+  MAX_ROOM_PLAYERS,
+  MIN_ROOM_PLAYERS,
+  type ClientView,
+  type RoomPublicState,
+  type ServerMessage,
 } from '@mormon-bridge/shared'
 import { pickFreeAvatar } from '../avatars/catalog'
 import AvatarView from '../ui/AvatarView'
@@ -73,6 +76,7 @@ export default function OnlineSession({
   const [seatIndex, setSeatIndex] = useState<number | null>(null)
   const [view, setView] = useState<ClientView | null>(null)
   const [ready, setReady] = useState(false)
+  const [tableSize, setTableSize] = useState(DEFAULT_TABLE_SIZE)
 
   const clientRef = useRef<RoomClient | null>(null)
   const passwordRef = useRef(password)
@@ -99,6 +103,7 @@ export default function OnlineSession({
         break
       case 'roomState':
         setRoom(msg.room)
+        setTableSize(msg.room.tableSize)
         if (msg.room.phase === 'playing') setMode('playing')
         break
       case 'clientView':
@@ -182,7 +187,7 @@ export default function OnlineSession({
       return
     }
     try {
-      const { roomCode: code } = await createRoom(apiBase, password)
+      const { roomCode: code } = await createRoom(apiBase, password, tableSize)
       setRoomCode(code)
       connectAndJoinReliable(code, password)
     } catch (e) {
@@ -210,6 +215,19 @@ export default function OnlineSession({
 
   const startGame = () => {
     clientRef.current?.send({ type: 'startGame' })
+  }
+
+  const changeTableSize = (size: number) => {
+    setTableSize(size)
+    clientRef.current?.send({ type: 'setTableSize', tableSize: size })
+  }
+
+  const addBot = () => {
+    clientRef.current?.send({ type: 'addBot' })
+  }
+
+  const removeBot = () => {
+    clientRef.current?.send({ type: 'removeBot' })
   }
 
   const leave = () => {
@@ -253,18 +271,39 @@ export default function OnlineSession({
 
   if (mode === 'lobby' && room) {
     const isHost = seatIndex === room.hostSeatIndex
+    const humans = room.seats.filter((s) => !s.isOpen && !s.isAI)
+    const openCount = room.seats.filter((s) => s.isOpen).length
+    const botCount = room.seats.filter((s) => s.isAI).length
     const canStart =
       isHost
-      && room.seats.length >= room.minPlayers
-      && room.seats.every((s) => s.ready)
+      && humans.length >= 1
+      && humans.every((s) => s.ready)
 
     return (
       <div style={shellStyle}>
         <h1 style={{ margin: 0 }}>Room {room.roomCode}</h1>
         <p style={{ margin: 0, opacity: 0.8 }}>
-          Share the code and password with friends. Need {room.minPlayers}–
-          {room.maxPlayers} players.
+          Share the code and password with friends. Table of {room.tableSize}
+          {' '}({room.minPlayers}–{room.maxPlayers}).
+          Open seats become bots when you start.
         </p>
+        {isHost && (
+          <label style={labelStyle}>
+            Table size
+            <select
+              value={room.tableSize}
+              onChange={(e) => changeTableSize(Number(e.target.value))}
+              style={inputStyle}
+            >
+              {Array.from(
+                { length: room.maxPlayers - room.minPlayers + 1 },
+                (_, i) => room.minPlayers + i,
+              ).map((n) => (
+                <option key={n} value={n}>{n} seats</option>
+              ))}
+            </select>
+          </label>
+        )}
         <ul style={{ listStyle: 'none', padding: 0, margin: 0, width: '100%', maxWidth: 360 }}>
           {room.seats.map((s) => (
             <li
@@ -275,18 +314,37 @@ export default function OnlineSession({
                 gap: 12,
                 padding: '8px 0',
                 borderBottom: '1px solid rgba(0,0,0,0.08)',
+                opacity: s.isOpen ? 0.55 : 1,
               }}
             >
-              <AvatarView avatarId={s.avatarId} size={40} />
+              {s.isOpen ? (
+                <div
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 8,
+                    border: '1px dashed rgba(0,0,0,0.25)',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              ) : (
+                <AvatarView avatarId={s.avatarId} size={40} />
+              )}
               <div style={{ flex: 1 }}>
                 <div>
-                  {s.displayName}
-                  {s.seatIndex === seatIndex ? ' (you)' : ''}
-                  {s.seatIndex === room.hostSeatIndex ? ' · host' : ''}
+                  {s.isOpen
+                    ? 'Open seat'
+                    : s.displayName}
+                  {!s.isOpen && s.seatIndex === seatIndex ? ' (you)' : ''}
+                  {!s.isOpen && s.seatIndex === room.hostSeatIndex ? ' · host' : ''}
+                  {s.isAI ? ' · bot' : ''}
                 </div>
                 <div style={{ fontSize: 13, opacity: 0.7 }}>
-                  {s.connected ? 'connected' : 'disconnected'}
-                  {s.ready ? ' · ready' : ''}
+                  {s.isOpen
+                    ? 'waiting for player or bot'
+                    : s.isAI
+                      ? 'bot'
+                      : `${s.connected ? 'connected' : 'disconnected'}${s.ready ? ' · ready' : ''}`}
                 </div>
               </div>
             </li>
@@ -298,9 +356,17 @@ export default function OnlineSession({
             {ready ? 'Unready' : 'Ready'}
           </button>
           {isHost && (
-            <button type="button" onClick={startGame} disabled={!canStart}>
-              Start game
-            </button>
+            <>
+              <button type="button" onClick={addBot} disabled={openCount === 0}>
+                Add bot
+              </button>
+              <button type="button" onClick={removeBot} disabled={botCount === 0}>
+                Remove bot
+              </button>
+              <button type="button" onClick={startGame} disabled={!canStart}>
+                Start game
+              </button>
+            </>
           )}
           <button type="button" onClick={leave}>Leave</button>
         </div>
@@ -339,6 +405,21 @@ export default function OnlineSession({
           onChange={(e) => setPassword(e.target.value)}
           style={inputStyle}
         />
+      </label>
+      <label style={labelStyle}>
+        Table size (create)
+        <select
+          value={tableSize}
+          onChange={(e) => setTableSize(Number(e.target.value))}
+          style={inputStyle}
+        >
+          {Array.from(
+            { length: MAX_ROOM_PLAYERS - MIN_ROOM_PLAYERS + 1 },
+            (_, i) => MIN_ROOM_PLAYERS + i,
+          ).map((n) => (
+            <option key={n} value={n}>{n} seats</option>
+          ))}
+        </select>
       </label>
       {error && <p style={{ color: '#b33', margin: 0 }}>{error}</p>}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>

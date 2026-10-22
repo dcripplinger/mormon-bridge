@@ -15,6 +15,12 @@ export type ClientMessage =
   | { type: 'setReady'; ready: boolean }
   | { type: 'leave' }
   | { type: 'startGame' }
+  /** Host-only: fixed lobby size (3–5). */
+  | { type: 'setTableSize'; tableSize: number }
+  /** Host-only: turn an open seat into a bot. */
+  | { type: 'addBot' }
+  /** Host-only: turn a bot seat back into open. */
+  | { type: 'removeBot' }
   | { type: 'declareBuy'; elapsedMs: number }
   | { type: 'claimDiscard' }
   | { type: 'drawDeck' }
@@ -50,12 +56,16 @@ export interface RoomSeatPublic {
   ready: boolean
   connected: boolean
   isAI: boolean
+  /** Empty lobby slot — claimable by a joining human (or fillable as a bot). */
+  isOpen: boolean
 }
 
 export interface RoomPublicState {
   roomCode: string
   phase: RoomPhase
   seats: RoomSeatPublic[]
+  /** Host-chosen table size; lobby always has this many slots. */
+  tableSize: number
   minPlayers: number
   maxPlayers: number
   /** Seat that created the room; may start when enough humans are seated. */

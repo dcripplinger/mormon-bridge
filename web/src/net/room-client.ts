@@ -61,12 +61,13 @@ export class RoomClient {
 export async function createRoom(
   apiBase: string,
   password: string,
+  tableSize?: number,
 ): Promise<{ roomCode: string }> {
   const base = apiBase.replace(/\/$/, '')
   const res = await fetch(`${base}/api/rooms`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, tableSize }),
   })
   const body = await res.json() as { roomCode?: string; error?: string }
   if (!res.ok || !body.roomCode) {

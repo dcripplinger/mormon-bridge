@@ -129,4 +129,103 @@ describe('HostRuntime', () => {
       true,
     )
   })
+
+  it('exposes fixed open seats for the host table size', async () => {
+    const host = await HostRuntime.create('SIZE01', 'secret', undefined, 4)
+    const { sink, inbox } = collectSink()
+    host.setSink(sink)
+    host.onConnect({ sessionId: 's0' })
+    await host.onMessage('s0', {
+      type: 'join',
+      password: 'secret',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    const room = host.roomPublicState()
+    expect(room.tableSize).toBe(4)
+    expect(room.seats).toHaveLength(4)
+    expect(room.seats.filter((s) => s.isOpen)).toHaveLength(3)
+    expect(room.seats[0]).toMatchObject({ displayName: 'Ada', isOpen: false, isAI: false })
+    expect(inbox.get('s0')?.some((m) => m.type === 'joined')).toBe(true)
+  })
+
+  it('fills open seats with bots on start and drives AI on alarm', async () => {
+    const host = await HostRuntime.create('BOTS01', 'secret', undefined, 3)
+    const { sink, inbox } = collectSink()
+    host.setSink(sink)
+    host.onConnect({ sessionId: 's0' })
+    await host.onMessage('s0', {
+      type: 'join',
+      password: 'secret',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    await host.onMessage('s0', { type: 'setReady', ready: true })
+    await host.onMessage('s0', { type: 'startGame' })
+
+    const room = host.roomPublicState()
+    expect(room.phase).toBe('playing')
+    expect(room.seats.filter((s) => s.isAI)).toHaveLength(2)
+    expect(room.seats.every((s) => !s.isOpen)).toBe(true)
+
+    // Round-prep: human readies; host AI readies bots and reveals.
+    await host.onMessage('s0', { type: 'setReady', ready: true })
+    for (let i = 0; i < 8; i++) {
+      host.onAlarm()
+      const view = (inbox.get('s0') ?? []).filter((m) => m.type === 'clientView').at(-1)
+      if (view && view.type === 'clientView' && view.view.phase === 'buy-window') break
+    }
+    const view = (inbox.get('s0') ?? []).filter((m) => m.type === 'clientView').at(-1)
+    if (!view || view.type !== 'clientView') throw new Error('no view')
+    expect(view.view.phase).toBe('buy-window')
+    expect(view.view.players.filter((p) => p.isAI)).toHaveLength(2)
+  })
+
+  it('lets a joining human replace a lobby bot', async () => {
+    const host = await HostRuntime.create('REPL01', 'secret', undefined, 3)
+    const { sink } = collectSink()
+    host.setSink(sink)
+    host.onConnect({ sessionId: 's0' })
+    await host.onMessage('s0', {
+      type: 'join',
+      password: 'secret',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    await host.onMessage('s0', { type: 'addBot' })
+    await host.onMessage('s0', { type: 'addBot' })
+    expect(host.roomPublicState().seats.filter((s) => s.isAI)).toHaveLength(2)
+
+    host.onConnect({ sessionId: 's1' })
+    await host.onMessage('s1', {
+      type: 'join',
+      password: 'secret',
+      displayName: 'Bob',
+      avatarId: 'h02',
+    })
+    const seats = host.roomPublicState().seats
+    expect(seats.filter((s) => s.isAI)).toHaveLength(1)
+    expect(seats.some((s) => s.displayName === 'Bob' && !s.isAI)).toBe(true)
+  })
+
+  it('host can resize the table when trailing seats are open or bots', async () => {
+    const host = await HostRuntime.create('RESIZE', 'secret', undefined, 3)
+    const { sink } = collectSink()
+    host.setSink(sink)
+    host.onConnect({ sessionId: 's0' })
+    await host.onMessage('s0', {
+      type: 'join',
+      password: 'secret',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    await host.onMessage('s0', { type: 'setTableSize', tableSize: 5 })
+    expect(host.roomPublicState().tableSize).toBe(5)
+    expect(host.roomPublicState().seats).toHaveLength(5)
+
+    await host.onMessage('s0', { type: 'addBot' })
+    await host.onMessage('s0', { type: 'setTableSize', tableSize: 3 })
+    expect(host.roomPublicState().tableSize).toBe(3)
+    expect(host.roomPublicState().seats).toHaveLength(3)
+  })
 })
