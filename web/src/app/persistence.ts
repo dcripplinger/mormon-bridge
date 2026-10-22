@@ -23,6 +23,8 @@ const GAME_VERSION = 1
 
 const KEY_PREFS = 'mb:prefs'
 const KEY_ACTIVE_GAME = 'mb:active-game'
+const KEY_ONLINE_PROFILE = 'mb:online-profile'
+const ONLINE_PROFILE_VERSION = 1
 
 // ---------------------------------------------------------------------------
 // Stored shapes
@@ -37,6 +39,17 @@ interface StoredPrefs {
 interface StoredActiveGame {
   version: number
   state: GameState
+}
+
+export interface OnlineProfile {
+  displayName: string
+  avatarId: string
+}
+
+interface StoredOnlineProfile {
+  version: number
+  displayName: string
+  avatarId: string
 }
 
 // ---------------------------------------------------------------------------
@@ -189,4 +202,39 @@ export async function saveActiveGame(state: GameState): Promise<void> {
 /** Remove the active-game entry (call on Quit or when the game ends). */
 export async function clearActiveGame(): Promise<void> {
   await Preferences.remove({ key: KEY_ACTIVE_GAME })
+}
+
+// ---------------------------------------------------------------------------
+// Online profile (display name + avatar for multiplayer)
+// ---------------------------------------------------------------------------
+
+/** Load the last online display name / avatar, or null if absent/invalid. */
+export async function loadOnlineProfile(): Promise<OnlineProfile | null> {
+  try {
+    const { value } = await Preferences.get({ key: KEY_ONLINE_PROFILE })
+    if (!value) return null
+    const parsed: StoredOnlineProfile = JSON.parse(value)
+    if (parsed.version !== ONLINE_PROFILE_VERSION) return null
+    if (typeof parsed.displayName !== 'string' || !parsed.displayName.trim()) return null
+    if (typeof parsed.avatarId !== 'string' || !parsed.avatarId) return null
+    const avatar = getAvatar(parsed.avatarId)
+    if (!avatar || avatar.kind !== 'human') return null
+    return {
+      displayName: parsed.displayName.trim(),
+      avatarId: parsed.avatarId,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Persist the online display name and avatar chosen for create/join. */
+export async function saveOnlineProfile(profile: OnlineProfile): Promise<void> {
+  const payload: StoredOnlineProfile = {
+    version: ONLINE_PROFILE_VERSION,
+    displayName: profile.displayName.trim(),
+    avatarId: profile.avatarId,
+  }
+  if (!payload.displayName) return
+  await Preferences.set({ key: KEY_ONLINE_PROFILE, value: JSON.stringify(payload) })
 }

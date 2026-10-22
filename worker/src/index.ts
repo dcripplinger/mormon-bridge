@@ -41,25 +41,13 @@ export default {
       return withCors(request, env, Response.json({ ok: true }))
     }
 
-    // Create a new private room (password required).
+    // Create a new private room (code is the only secret; not listed publicly).
     if (request.method === 'POST' && url.pathname === '/api/rooms') {
-      let body: { password?: string; tableSize?: number }
+      let body: { tableSize?: number }
       try {
         body = await request.json()
       } catch {
-        return withCors(
-          request,
-          env,
-          Response.json({ error: 'Invalid JSON' }, { status: 400 }),
-        )
-      }
-      const password = typeof body.password === 'string' ? body.password : ''
-      if (password.length < 4) {
-        return withCors(
-          request,
-          env,
-          Response.json({ error: 'Password must be at least 4 characters' }, { status: 400 }),
-        )
+        body = {}
       }
       const tableSize = typeof body.tableSize === 'number' ? body.tableSize : undefined
 
@@ -70,7 +58,7 @@ export default {
         const res = await stub.fetch(new Request('https://room/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password, roomCode, tableSize }),
+          body: JSON.stringify({ roomCode, tableSize }),
         }))
         if (res.status === 409) continue
         return withCors(request, env, res)

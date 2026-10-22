@@ -55,8 +55,8 @@ VITE_API_BASE=https://mormon-bridge.<your-subdomain>.workers.dev
 ## Free-tier posture
 
 - One Durable Object instance per room code; state lives in DO storage (no external DB).
-- No public lobby listing — join requires code + password.
-- Empty rooms are cleared after ~30 minutes with no connections (`HostRuntime` alarm).
+- No public lobby listing — join requires knowing the room code.
+- Empty rooms are cleared after ~30 minutes with no connections; all rooms expire after 3 days (`HostRuntime` alarm).
 - Friend-sized traffic (a few concurrent rooms) fits typical Workers free allowances; watch
   Cloudflare’s current DO/request limits if you grow beyond that.
 

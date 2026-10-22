@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HostRuntime } from './host-runtime'
+import { DEFAULT_MAX_ROOM_MS, HostRuntime } from './host-runtime'
 import type { ClientMessage, ServerMessage } from './protocol'
 
 function collectSink() {
@@ -14,8 +14,8 @@ function collectSink() {
   return { sink, inbox }
 }
 
-async function joinThree(password = 'secret') {
-  const host = await HostRuntime.create('ABCD12', password)
+function joinThree() {
+  const host = HostRuntime.create('ABCD12')
   const { sink, inbox } = collectSink()
   host.setSink(sink)
 
@@ -25,9 +25,8 @@ async function joinThree(password = 'secret') {
     ['s2', 'Cara'],
   ] as const) {
     host.onConnect({ sessionId: sid })
-    await host.onMessage(sid, {
+    void host.onMessage(sid, {
       type: 'join',
-      password,
       displayName: name,
       avatarId: `av-${name}`,
     })
@@ -37,22 +36,50 @@ async function joinThree(password = 'secret') {
 }
 
 describe('HostRuntime', () => {
-  it('rejects wrong password', async () => {
-    const host = await HostRuntime.create('ROOM01', 'right')
+  it('rejects a duplicate display name', async () => {
+    const host = HostRuntime.create('NAME01')
     const { sink, inbox } = collectSink()
     host.setSink(sink)
+    host.onConnect({ sessionId: 's0' })
+    await host.onMessage('s0', {
+      type: 'join',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    host.onConnect({ sessionId: 's1' })
+    await host.onMessage('s1', {
+      type: 'join',
+      displayName: 'ada',
+      avatarId: 'h02',
+    })
+    expect(
+      inbox.get('s1')?.some(
+        (m) => m.type === 'error' && m.message.includes('already taken'),
+      ),
+    ).toBe(true)
+    expect(host.roomPublicState().seats.filter((s) => !s.isOpen)).toHaveLength(1)
+  })
+
+  it('rejects join when the room is closed', async () => {
+    let now = 0
+    const host = HostRuntime.create('ROOM01', () => now, 3)
+    const { sink, inbox } = collectSink()
+    host.setSink(sink)
+    now = DEFAULT_MAX_ROOM_MS
+    expect(host.onAlarm()).toBeNull()
     host.onConnect({ sessionId: 'x' })
     await host.onMessage('x', {
       type: 'join',
-      password: 'wrong',
       displayName: 'X',
       avatarId: 'a',
     })
-    expect(inbox.get('x')?.some((m) => m.type === 'error')).toBe(true)
+    expect(inbox.get('x')?.some((m) => m.type === 'error' && m.message === 'Room is closed')).toBe(
+      true,
+    )
   })
 
   it('starts a game when host starts and everyone is ready', async () => {
-    const { host, inbox } = await joinThree()
+    const { host, inbox } = joinThree()
     for (const sid of ['s0', 's1', 's2']) {
       await host.onMessage(sid, { type: 'setReady', ready: true })
     }
@@ -67,7 +94,7 @@ describe('HostRuntime', () => {
   })
 
   it('rebinding with reconnect token restores the seat', async () => {
-    const { host, inbox } = await joinThree()
+    const { host, inbox } = joinThree()
     const joined = (inbox.get('s1') ?? []).find((m) => m.type === 'joined')
     if (!joined || joined.type !== 'joined') throw new Error('no join')
     host.onDisconnect('s1')
@@ -75,7 +102,6 @@ describe('HostRuntime', () => {
     host.onConnect({ sessionId: 's1b' })
     await host.onMessage('s1b', {
       type: 'join',
-      password: 'secret',
       displayName: 'Bob',
       avatarId: 'av-Bob',
       reconnectToken: joined.reconnectToken,
@@ -85,7 +111,7 @@ describe('HostRuntime', () => {
   })
 
   it('ranks buys by client-reported elapsedMs', async () => {
-    const { host, inbox } = await joinThree()
+    const { host, inbox } = joinThree()
     for (const sid of ['s0', 's1', 's2']) {
       await host.onMessage(sid, { type: 'setReady', ready: true })
     }
@@ -112,13 +138,12 @@ describe('HostRuntime', () => {
   })
 
   it('rate-limits noisy clients', async () => {
-    const host = await HostRuntime.create('RATE01', 'p', () => 1000)
+    const host = HostRuntime.create('RATE01', () => 1000)
     const { sink, inbox } = collectSink()
     host.setSink(sink)
     host.onConnect({ sessionId: 'n' })
     const join: ClientMessage = {
       type: 'join',
-      password: 'p',
       displayName: 'N',
       avatarId: 'a',
     }
@@ -131,13 +156,12 @@ describe('HostRuntime', () => {
   })
 
   it('exposes fixed open seats for the host table size', async () => {
-    const host = await HostRuntime.create('SIZE01', 'secret', undefined, 4)
+    const host = HostRuntime.create('SIZE01', undefined, 4)
     const { sink, inbox } = collectSink()
     host.setSink(sink)
     host.onConnect({ sessionId: 's0' })
     await host.onMessage('s0', {
       type: 'join',
-      password: 'secret',
       displayName: 'Ada',
       avatarId: 'h01',
     })
@@ -150,13 +174,12 @@ describe('HostRuntime', () => {
   })
 
   it('fills open seats with bots on start and drives AI on alarm', async () => {
-    const host = await HostRuntime.create('BOTS01', 'secret', undefined, 3)
+    const host = HostRuntime.create('BOTS01', undefined, 3)
     const { sink, inbox } = collectSink()
     host.setSink(sink)
     host.onConnect({ sessionId: 's0' })
     await host.onMessage('s0', {
       type: 'join',
-      password: 'secret',
       displayName: 'Ada',
       avatarId: 'h01',
     })
@@ -182,13 +205,12 @@ describe('HostRuntime', () => {
   })
 
   it('lets a joining human replace a lobby bot', async () => {
-    const host = await HostRuntime.create('REPL01', 'secret', undefined, 3)
+    const host = HostRuntime.create('REPL01', undefined, 3)
     const { sink } = collectSink()
     host.setSink(sink)
     host.onConnect({ sessionId: 's0' })
     await host.onMessage('s0', {
       type: 'join',
-      password: 'secret',
       displayName: 'Ada',
       avatarId: 'h01',
     })
@@ -199,7 +221,6 @@ describe('HostRuntime', () => {
     host.onConnect({ sessionId: 's1' })
     await host.onMessage('s1', {
       type: 'join',
-      password: 'secret',
       displayName: 'Bob',
       avatarId: 'h02',
     })
@@ -209,13 +230,12 @@ describe('HostRuntime', () => {
   })
 
   it('host can resize the table when trailing seats are open or bots', async () => {
-    const host = await HostRuntime.create('RESIZE', 'secret', undefined, 3)
+    const host = HostRuntime.create('RESIZE', undefined, 3)
     const { sink } = collectSink()
     host.setSink(sink)
     host.onConnect({ sessionId: 's0' })
     await host.onMessage('s0', {
       type: 'join',
-      password: 'secret',
       displayName: 'Ada',
       avatarId: 'h01',
     })

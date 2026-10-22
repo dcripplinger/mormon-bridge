@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { avatarsForKind, pickFreeAvatar } from '../avatars/catalog'
-import type { GameState, PlayerSetup } from '../game/state'
+import { pickFreeAvatar } from '../avatars/catalog'
+import type { PlayerSetup } from '../game/state'
+import AvatarPickerModal from '../ui/AvatarPickerModal'
 import AvatarView from '../ui/AvatarView'
 import { normalizeSeats, savePrefs } from './persistence'
 import type { GameSettings, SeatDraft, WildMoveFrom, WildMoveTo } from './types'
@@ -10,12 +11,8 @@ export type { GameSettings, SeatDraft, WildMoveFrom, WildMoveTo }
 interface Props {
   initialSeats?: SeatDraft[]
   initialSettings?: GameSettings
-  /** Non-null when a saved game exists; shows Continue / Quit instead of Start. */
-  activeGame: GameState | null
   onStart: (players: PlayerSetup[]) => void
-  onContinue: () => void
-  onQuit: () => void
-  onOnline?: () => void
+  onBack: () => void
 }
 
 const DEFAULT_GAME_SETTINGS: GameSettings = {
@@ -76,11 +73,8 @@ function displayNameFor(index: number): string {
 export default function MenuScreen({
   initialSeats,
   initialSettings,
-  activeGame,
   onStart,
-  onContinue,
-  onQuit,
-  onOnline,
+  onBack,
 }: Props) {
   const [seats, setSeats] = useState<SeatDraft[]>(() =>
     normalizeSeats(
@@ -181,8 +175,6 @@ export default function MenuScreen({
     )
   }
 
-  const hasActiveGame = activeGame !== null
-
   const canRemove = seats.length > MIN_PLAYERS
 
   return (
@@ -211,7 +203,42 @@ export default function MenuScreen({
           width: 'min(420px, 100%)',
         }}
       >
-        {!hasActiveGame && <div
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px',
+          }}
+        >
+          <h1
+            style={{
+              margin: 0,
+              color: 'var(--text)',
+              fontSize: '1.15rem',
+              fontWeight: 700,
+            }}
+          >
+            Single Player
+          </h1>
+          <button
+            type="button"
+            onClick={onBack}
+            style={{
+              background: 'transparent',
+              color: 'var(--text-dim)',
+              border: '1px solid var(--border)',
+              padding: '6px 10px',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+            }}
+          >
+            Back
+          </button>
+        </div>
+
+        <div
           style={{
             display: 'flex',
             flexWrap: 'wrap',
@@ -322,9 +349,9 @@ export default function MenuScreen({
               Add
             </button>
           )}
-        </div>}
+        </div>
 
-        {!hasActiveGame && <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px' }}>
           <button
             type="button"
             onClick={openSettings}
@@ -357,78 +384,28 @@ export default function MenuScreen({
           >
             How to Play
           </button>
-        </div>}
+        </div>
 
-        {hasActiveGame ? (
-          <>
-            <button
-              onClick={onContinue}
-              style={{
-                background: 'var(--accent)',
-                color: '#1a1a1a',
-                padding: '12px',
-                borderRadius: '8px',
-                fontSize: '1.05rem',
-                fontWeight: 'bold',
-              }}
-            >
-              Continue Game
-            </button>
-            <button
-              type="button"
-              onClick={onQuit}
-              style={{
-                background: 'var(--surface-2)',
-                color: 'var(--text-dim)',
-                border: '1px solid var(--border)',
-                padding: '10px',
-                borderRadius: '8px',
-                fontSize: '0.9rem',
-                fontWeight: 600,
-              }}
-            >
-              Quit &amp; Start New Game
-            </button>
-          </>
-        ) : (
-          <button
-            onClick={handleStart}
-            style={{
-              background: 'var(--accent)',
-              color: '#1a1a1a',
-              padding: '12px',
-              borderRadius: '8px',
-              fontSize: '1.05rem',
-              fontWeight: 'bold',
-            }}
-          >
-            Start Game
-          </button>
-        )}
-
-        {onOnline && (
-          <button
-            type="button"
-            onClick={onOnline}
-            style={{
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-              border: '1px solid var(--border)',
-              padding: '10px',
-              borderRadius: '8px',
-              fontSize: '0.95rem',
-              fontWeight: 600,
-            }}
-          >
-            Online private room
-          </button>
-        )}
+        <button
+          onClick={handleStart}
+          style={{
+            background: 'var(--accent)',
+            color: '#1a1a1a',
+            padding: '12px',
+            borderRadius: '8px',
+            fontSize: '1.05rem',
+            fontWeight: 'bold',
+          }}
+        >
+          Start Game
+        </button>
       </div>
 
       {editingSeat && editingIndex !== null && (
         <AvatarPickerModal
           name={displayNameFor(editingIndex)}
-          seat={editingSeat}
+          kind={editingSeat.kind}
+          avatarId={editingSeat.avatarId}
           takenIds={takenByOthers}
           onAvatarChange={(id) => setAvatar(editingIndex, id)}
           onClose={() => setEditingIndex(null)}
@@ -719,154 +696,6 @@ function HowToPlayModal({ onClose }: { onClose: () => void }) {
         Got it
       </button>
     </ModalShell>
-  )
-}
-
-function AvatarPickerModal({
-  name,
-  seat,
-  takenIds,
-  onAvatarChange,
-  onClose,
-}: {
-  name: string
-  seat: SeatDraft
-  takenIds: Set<string>
-  onAvatarChange: (avatarId: string) => void
-  onClose: () => void
-}) {
-  const options = avatarsForKind(seat.kind)
-
-  return (
-    <>
-      <button
-        type="button"
-        aria-label="Close avatar picker"
-        onClick={onClose}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(0, 0, 0, 0.5)',
-          border: 'none',
-          padding: 0,
-          zIndex: 40,
-          cursor: 'pointer',
-        }}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Choose avatar for ${name}`}
-        style={{
-          position: 'fixed',
-          left: '50%',
-          top: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: 'min(340px, calc(100vw - 32px))',
-          maxHeight: 'min(480px, calc(100vh - 32px))',
-          overflowY: 'auto',
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          borderRadius: '14px',
-          padding: '16px',
-          zIndex: 50,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '14px',
-          boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '8px',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <AvatarView avatarId={seat.avatarId} size={44} alt="" />
-            <div>
-              <div style={{ color: 'var(--text)', fontWeight: 700 }}>{name}</div>
-              <div style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>
-                Choose an avatar
-              </div>
-            </div>
-          </div>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            style={{
-              width: '32px',
-              height: '32px',
-              borderRadius: '6px',
-              border: '1px solid var(--border)',
-              background: 'transparent',
-              color: 'var(--text-dim)',
-              fontSize: '1.1rem',
-              lineHeight: 1,
-            }}
-          >
-            ×
-          </button>
-        </div>
-
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
-            gap: '8px',
-          }}
-        >
-          {options.map((avatar) => {
-            const selected = seat.avatarId === avatar.id
-            const takenElsewhere = takenIds.has(avatar.id)
-            return (
-              <button
-                key={avatar.id}
-                type="button"
-                disabled={takenElsewhere}
-                title={
-                  takenElsewhere
-                    ? 'Already chosen by another player'
-                    : avatar.label
-                }
-                aria-label={avatar.label}
-                aria-pressed={selected}
-                onClick={() => onAvatarChange(avatar.id)}
-                style={{
-                  padding: '4px',
-                  borderRadius: '10px',
-                  border: selected
-                    ? '2px solid var(--accent)'
-                    : '2px solid transparent',
-                  background: selected ? 'var(--surface-2)' : 'transparent',
-                  opacity: takenElsewhere ? 0.35 : 1,
-                  lineHeight: 0,
-                }}
-              >
-                <AvatarView avatarId={avatar.id} size={56} alt={avatar.label} />
-              </button>
-            )
-          })}
-        </div>
-
-        <button
-          type="button"
-          onClick={onClose}
-          style={{
-            background: 'var(--accent)',
-            color: '#1a1a1a',
-            padding: '10px',
-            borderRadius: '8px',
-            fontWeight: 700,
-          }}
-        >
-          Done
-        </button>
-      </div>
-    </>
   )
 }
 

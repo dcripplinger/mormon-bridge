@@ -91,7 +91,7 @@ Each turn proceeds in this order:
 
 ### Multiplayer
 - Online private rooms only (no public matchmaking, no pass-and-play)
-- UX: create/join with room code + password, ready-up, host starts at 3–5 players
+- UX: create/join with a short room code (no password), ready-up, host starts at 3–5 players
 - Server-authoritative via Cloudflare Durable Objects (`worker/`); clients render fogged `ClientView`s
 - Buy races use **client-reported elapsedMs** (time from buy-window start to tap), not server receive time
 - Shared host logic lives in `shared/` (`HostRuntime`) so a future client-host mode can reuse the same protocol

@@ -1,6 +1,7 @@
+/** Uppercase letters + digits, omitting ambiguous 0/O/1/I for easier sharing. */
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
-/** Short human-shareable room code (no ambiguous 0/O/1/I). */
+/** Short unique room code. Knowing the code is how players join (rooms are unlisted). */
 export function generateRoomCode(length = 6, rng: () => number = Math.random): string {
   let out = ''
   for (let i = 0; i < length; i++) {

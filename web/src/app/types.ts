@@ -1,6 +1,6 @@
 /**
  * Shared application-level types used by both the menu and persistence layers.
- * Keeping them here avoids circular imports between MenuScreen and persistence.
+ * Keeping them here avoids circular imports between screens and persistence.
  */
 
 import type { AvatarKind } from '../avatars/catalog'

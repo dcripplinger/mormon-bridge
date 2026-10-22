@@ -1,0 +1,225 @@
+import { useEffect, useState, type CSSProperties } from 'react'
+import type { GameState } from '../game/state'
+
+interface Props {
+  activeGame: GameState | null
+  onSoloSetup: () => void
+  onContinue: () => void
+  onQuit: () => void
+  onCreateOnline: () => void
+  onJoinOnline: () => void
+}
+
+export default function HomeScreen({
+  activeGame,
+  onSoloSetup,
+  onContinue,
+  onQuit,
+  onCreateOnline,
+  onJoinOnline,
+}: Props) {
+  const [continueOpen, setContinueOpen] = useState(false)
+
+  useEffect(() => {
+    if (!continueOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContinueOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [continueOpen])
+
+  const handleSinglePlayer = () => {
+    if (activeGame) {
+      setContinueOpen(true)
+      return
+    }
+    onSoloSetup()
+  }
+
+  const handleStartNew = () => {
+    setContinueOpen(false)
+    onQuit()
+    onSoloSetup()
+  }
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100%',
+        gap: '28px',
+        background: 'var(--bg)',
+        padding: '20px 16px',
+      }}
+    >
+      <div style={{ textAlign: 'center' }}>
+        <h1
+          style={{
+            margin: 0,
+            color: 'var(--text)',
+            fontSize: '1.85rem',
+            fontWeight: 700,
+            letterSpacing: '-0.02em',
+          }}
+        >
+          Mormon Bridge
+        </h1>
+        <p
+          style={{
+            margin: '8px 0 0',
+            color: 'var(--text-dim)',
+            fontSize: '0.95rem',
+          }}
+        >
+          Pick how you want to play
+        </p>
+      </div>
+
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: '16px',
+          padding: '16px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+          width: 'min(360px, 100%)',
+        }}
+      >
+        <button type="button" onClick={handleSinglePlayer} style={primaryButtonStyle}>
+          Single Player
+        </button>
+        <button type="button" onClick={onCreateOnline} style={secondaryButtonStyle}>
+          Create Online Game
+        </button>
+        <button type="button" onClick={onJoinOnline} style={secondaryButtonStyle}>
+          Join Online Game
+        </button>
+      </div>
+
+      {continueOpen && (
+        <ContinueModal
+          onContinue={() => {
+            setContinueOpen(false)
+            onContinue()
+          }}
+          onStartNew={handleStartNew}
+          onClose={() => setContinueOpen(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+function ContinueModal({
+  onContinue,
+  onStartNew,
+  onClose,
+}: {
+  onContinue: () => void
+  onStartNew: () => void
+  onClose: () => void
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="Close continue game dialog"
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          border: 'none',
+          padding: 0,
+          zIndex: 40,
+          cursor: 'pointer',
+        }}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Continue or start a new game"
+        style={{
+          position: 'fixed',
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: 'min(360px, calc(100vw - 32px))',
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: '14px',
+          padding: '16px',
+          zIndex: 50,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '14px',
+          boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px',
+          }}
+        >
+          <div style={{ color: 'var(--text)', fontWeight: 700, fontSize: '1.05rem' }}>
+            Game in progress
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            style={{
+              width: '32px',
+              height: '32px',
+              borderRadius: '6px',
+              border: '1px solid var(--border)',
+              background: 'transparent',
+              color: 'var(--text-dim)',
+              fontSize: '1.1rem',
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <p style={{ margin: 0, color: 'var(--text-dim)', fontSize: '0.9rem', lineHeight: 1.4 }}>
+          You have a single player game in progress. Continue where you left off, or start a new one.
+        </p>
+        <button type="button" onClick={onContinue} style={primaryButtonStyle}>
+          Continue Game
+        </button>
+        <button type="button" onClick={onStartNew} style={secondaryButtonStyle}>
+          Start New Game
+        </button>
+      </div>
+    </>
+  )
+}
+
+const primaryButtonStyle: CSSProperties = {
+  background: 'var(--accent)',
+  color: '#1a1a1a',
+  padding: '12px',
+  borderRadius: '8px',
+  fontSize: '1.05rem',
+  fontWeight: 'bold',
+}
+
+const secondaryButtonStyle: CSSProperties = {
+  background: 'var(--surface-2)',
+  color: 'var(--text)',
+  border: '1px solid var(--border)',
+  padding: '12px',
+  borderRadius: '8px',
+  fontSize: '0.95rem',
+  fontWeight: 600,
+}

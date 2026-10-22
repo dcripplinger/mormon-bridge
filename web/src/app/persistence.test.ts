@@ -31,9 +31,11 @@ vi.mock('@capacitor/preferences', () => ({
 import {
   clearActiveGame,
   loadActiveGame,
+  loadOnlineProfile,
   loadPrefs,
   normalizeSeats,
   saveActiveGame,
+  saveOnlineProfile,
   savePrefs,
 } from './persistence'
 import type { GameState } from '../game/state'
@@ -252,5 +254,35 @@ describe('active game', () => {
 
   it('clearActiveGame is a no-op when nothing is stored', async () => {
     await expect(clearActiveGame()).resolves.toBeUndefined()
+  })
+})
+
+describe('online profile', () => {
+  it('returns null when nothing is stored', async () => {
+    expect(await loadOnlineProfile()).toBeNull()
+  })
+
+  it('round-trips display name and avatar', async () => {
+    await saveOnlineProfile({ displayName: 'Ada', avatarId: 'h03' })
+    expect(await loadOnlineProfile()).toEqual({
+      displayName: 'Ada',
+      avatarId: 'h03',
+    })
+  })
+
+  it('rejects a bot avatar id', async () => {
+    store.set(
+      'mb:online-profile',
+      JSON.stringify({ version: 1, displayName: 'Ada', avatarId: 'b01' }),
+    )
+    expect(await loadOnlineProfile()).toBeNull()
+  })
+
+  it('trims the display name on save', async () => {
+    await saveOnlineProfile({ displayName: '  Bob  ', avatarId: 'h01' })
+    expect(await loadOnlineProfile()).toEqual({
+      displayName: 'Bob',
+      avatarId: 'h01',
+    })
   })
 })

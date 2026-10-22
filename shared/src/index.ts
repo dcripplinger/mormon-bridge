@@ -10,7 +10,6 @@ export type {
 
 export { projectView } from './project-view'
 export { generateRoomCode, normalizeRoomCode } from './room-code'
-export { hashPassword, randomSaltHex, verifyPassword } from './password'
 export { generateReconnectToken } from './reconnect-token'
 export {
   HostRuntime,
@@ -20,6 +19,7 @@ export {
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_RATE_LIMIT_PER_SEC,
   DEFAULT_EMPTY_ROOM_MS,
+  DEFAULT_MAX_ROOM_MS,
   DEFAULT_AI_TICK_MS,
   DEFAULT_IDLE_ALARM_MS,
   type HostRuntimeOptions,

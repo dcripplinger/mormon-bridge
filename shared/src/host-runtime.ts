@@ -17,7 +17,6 @@ import {
 } from '../../web/src/game/state'
 import { decideBuy, runAIStep } from '../../web/src/game/ai'
 import { DEFAULT_WILD_RULES } from '../../web/src/game/meld-play'
-import { hashPassword, randomSaltHex, verifyPassword } from './password'
 import type {
   ClientMessage,
   RoomPhase,
@@ -38,6 +37,8 @@ export const DEFAULT_IDLE_TIMEOUT_MS = 90_000
 export const DEFAULT_RATE_LIMIT_PER_SEC = 12
 /** Close room after sitting empty this long. */
 export const DEFAULT_EMPTY_ROOM_MS = 30 * 60_000
+/** Hard max lifetime from room creation, regardless of activity. */
+export const DEFAULT_MAX_ROOM_MS = 3 * 24 * 60 * 60_000
 /** Delay between host-driven AI steps while a bot should act. */
 export const DEFAULT_AI_TICK_MS = 500
 /** Periodic wake when nothing urgent is pending. */
@@ -66,8 +67,6 @@ interface SeatRecord {
 
 export interface HostRuntimeSnapshot {
   roomCode: string
-  passwordSalt: string
-  passwordHash: string
   phase: RoomPhase
   tableSize: number
   seats: SeatRecord[]
@@ -80,16 +79,15 @@ export interface HostRuntimeSnapshot {
 
 export interface HostRuntimeOptions {
   roomCode: string
-  passwordSalt: string
-  passwordHash: string
   now?: () => number
   idleTimeoutMs?: number
   rateLimitPerSec?: number
   emptyRoomMs?: number
+  maxRoomMs?: number
   aiTickMs?: number
   tableSize?: number
   /** Seeded snapshot restore. */
-  snapshot?: Omit<HostRuntimeSnapshot, 'roomCode' | 'passwordSalt' | 'passwordHash'>
+  snapshot?: Omit<HostRuntimeSnapshot, 'roomCode'>
 }
 
 /**
@@ -98,12 +96,11 @@ export interface HostRuntimeOptions {
  */
 export class HostRuntime {
   readonly roomCode: string
-  private readonly passwordSalt: string
-  private readonly passwordHash: string
   private readonly now: () => number
   private readonly idleTimeoutMs: number
   private readonly rateLimitPerSec: number
   private readonly emptyRoomMs: number
+  private readonly maxRoomMs: number
   private readonly aiTickMs: number
 
   private phase: RoomPhase = 'lobby'
@@ -121,12 +118,11 @@ export class HostRuntime {
 
   constructor(opts: HostRuntimeOptions) {
     this.roomCode = opts.roomCode
-    this.passwordSalt = opts.passwordSalt
-    this.passwordHash = opts.passwordHash
     this.now = opts.now ?? Date.now
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
     this.rateLimitPerSec = opts.rateLimitPerSec ?? DEFAULT_RATE_LIMIT_PER_SEC
     this.emptyRoomMs = opts.emptyRoomMs ?? DEFAULT_EMPTY_ROOM_MS
+    this.maxRoomMs = opts.maxRoomMs ?? DEFAULT_MAX_ROOM_MS
     this.aiTickMs = opts.aiTickMs ?? DEFAULT_AI_TICK_MS
     const t = this.now()
     this.lastActivityMs = t
@@ -154,18 +150,13 @@ export class HostRuntime {
     }
   }
 
-  static async create(
+  static create(
     roomCode: string,
-    password: string,
     now?: () => number,
     tableSize?: number,
-  ): Promise<HostRuntime> {
-    const salt = await randomSaltHex()
-    const hash = await hashPassword(password, salt)
+  ): HostRuntime {
     return new HostRuntime({
       roomCode,
-      passwordSalt: salt,
-      passwordHash: hash,
       now,
       tableSize,
     })
@@ -178,8 +169,6 @@ export class HostRuntime {
   serialize(): HostRuntimeSnapshot {
     return {
       roomCode: this.roomCode,
-      passwordSalt: this.passwordSalt,
-      passwordHash: this.passwordHash,
       phase: this.phase,
       tableSize: this.tableSize,
       seats: this.seats.map((s) => ({ ...s })),
@@ -194,8 +183,6 @@ export class HostRuntime {
   static fromSnapshot(snap: HostRuntimeSnapshot, now?: () => number): HostRuntime {
     return new HostRuntime({
       roomCode: snap.roomCode,
-      passwordSalt: snap.passwordSalt,
-      passwordHash: snap.passwordHash,
       now,
       snapshot: snap,
     })
@@ -215,7 +202,7 @@ export class HostRuntime {
     }
 
     if (msg.type === 'join') {
-      await this.handleJoin(sessionId, msg)
+      this.handleJoin(sessionId, msg)
       return
     }
 
@@ -266,6 +253,10 @@ export class HostRuntime {
    */
   onAlarm(): number | null {
     const t = this.now()
+    if (t - this.createdAtMs >= this.maxRoomMs) {
+      this.phase = 'closed'
+      return null
+    }
     if (this.connectedCount() === 0 && t - this.lastActivityMs >= this.emptyRoomMs) {
       this.phase = 'closed'
       return null
@@ -284,8 +275,12 @@ export class HostRuntime {
 
   /** Suggested delay until the next transport alarm wake. */
   wakeDelayMs(): number {
-    if (this.phase === 'playing' && this.needsAiTick()) return this.aiTickMs
-    return Math.min(DEFAULT_IDLE_ALARM_MS, this.idleTimeoutMs)
+    const untilMax = this.maxRoomMs - (this.now() - this.createdAtMs)
+    const base =
+      this.phase === 'playing' && this.needsAiTick()
+        ? this.aiTickMs
+        : Math.min(DEFAULT_IDLE_ALARM_MS, this.idleTimeoutMs)
+    return Math.max(0, Math.min(base, untilMax))
   }
 
   roomPublicState(): RoomPublicState {
@@ -429,18 +424,12 @@ export class HostRuntime {
     seat.avatarId = ''
   }
 
-  private async handleJoin(
+  private handleJoin(
     sessionId: string,
     msg: Extract<ClientMessage, { type: 'join' }>,
-  ): Promise<void> {
+  ): void {
     if (this.phase === 'closed') {
       this.send(sessionId, { type: 'error', message: 'Room is closed' })
-      return
-    }
-
-    const ok = await verifyPassword(msg.password, this.passwordSalt, this.passwordHash)
-    if (!ok) {
-      this.send(sessionId, { type: 'error', message: 'Wrong password' })
       return
     }
 
@@ -450,8 +439,16 @@ export class HostRuntime {
         if (existing.sessionId && existing.sessionId !== sessionId) {
           this.send(existing.sessionId, { type: 'kicked', reason: 'Reconnected elsewhere' })
         }
+        const nextName = msg.displayName.trim() || existing.displayName
+        if (this.isDisplayNameTaken(nextName, existing.seatIndex)) {
+          this.send(sessionId, {
+            type: 'error',
+            message: 'That name is already taken. Choose a different name.',
+          })
+          return
+        }
         existing.sessionId = sessionId
-        existing.displayName = msg.displayName.trim() || existing.displayName
+        existing.displayName = nextName
         if (msg.avatarId) existing.avatarId = msg.avatarId
         this.send(sessionId, {
           type: 'joined',
@@ -491,6 +488,13 @@ export class HostRuntime {
     }
 
     const name = msg.displayName.trim() || `Player ${seat.seatIndex + 1}`
+    if (this.isDisplayNameTaken(name)) {
+      this.send(sessionId, {
+        type: 'error',
+        message: 'That name is already taken. Choose a different name.',
+      })
+      return
+    }
     const token = generateReconnectToken()
     seat.isOpen = false
     seat.isAI = false
@@ -508,6 +512,18 @@ export class HostRuntime {
       roomCode: this.roomCode,
     })
     this.broadcastRoom()
+  }
+
+  /** Case-insensitive display-name uniqueness among seated players (humans and bots). */
+  private isDisplayNameTaken(name: string, exceptSeatIndex?: number): boolean {
+    const key = name.trim().toLowerCase()
+    if (!key) return false
+    return this.seats.some(
+      (s) =>
+        !s.isOpen
+        && s.seatIndex !== exceptSeatIndex
+        && s.displayName.trim().toLowerCase() === key,
+    )
   }
 
   private handleLeave(sessionId: string, seat: SeatRecord): void {

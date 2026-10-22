@@ -6,7 +6,6 @@ import type { Meld, TurnPhase } from '../../web/src/game/state'
 export type ClientMessage =
   | {
     type: 'join'
-    password: string
     displayName: string
     avatarId: string
     /** Rebind an existing seat after disconnect. */

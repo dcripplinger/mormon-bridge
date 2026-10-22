@@ -78,15 +78,11 @@ export class RoomDurableObject implements DurableObject {
     if (this.runtime) {
       return Response.json({ error: 'Room already exists' }, { status: 409 })
     }
-    let body: { password?: string; roomCode?: string; tableSize?: number }
+    let body: { roomCode?: string; tableSize?: number }
     try {
       body = await request.json()
     } catch {
       return Response.json({ error: 'Invalid JSON' }, { status: 400 })
-    }
-    const password = typeof body.password === 'string' ? body.password : ''
-    if (password.length < 4) {
-      return Response.json({ error: 'Password must be at least 4 characters' }, { status: 400 })
     }
     const code = normalizeRoomCode(body.roomCode ?? generateRoomCode())
     if (code.length < 4) {
@@ -94,7 +90,7 @@ export class RoomDurableObject implements DurableObject {
     }
     const tableSize = typeof body.tableSize === 'number' ? body.tableSize : undefined
 
-    this.runtime = await HostRuntime.create(code, password, undefined, tableSize)
+    this.runtime = HostRuntime.create(code, undefined, tableSize)
     this.attachSink()
     await this.persist()
     await this.scheduleWake()

@@ -1,18 +1,28 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { App as CapApp } from '@capacitor/app'
 import './index.css'
 import GameScreen from './app/GameScreen'
+import HomeScreen from './app/HomeScreen'
+import {
+  consumeJoinCodeFromLocation,
+  parseJoinCodeFromUrl,
+} from './app/join-link'
 import MenuScreen from './app/MenuScreen'
-import OnlineSession from './app/OnlineSession'
+import OnlineSession, { type OnlineIntent } from './app/OnlineSession'
 import {
   clearActiveGame,
   loadActiveGame,
+  loadOnlineProfile,
   loadPrefs,
   saveActiveGame,
+  type OnlineProfile,
 } from './app/persistence'
 import type { GameSettings, SeatDraft } from './app/types'
 import { createGame } from './game/state'
 import type { GameState, PlayerSetup } from './game/state'
+
+type MenuView = 'home' | 'solo' | 'online'
 
 function App() {
   // True while we're reading prefs/active-game from storage on boot
@@ -20,9 +30,11 @@ function App() {
 
   // The game currently being played (null = on menu)
   const [gameState, setGameState] = useState<GameState | null>(null)
-  const [onlineOpen, setOnlineOpen] = useState(false)
+  const [menuView, setMenuView] = useState<MenuView>('home')
+  const [onlineIntent, setOnlineIntent] = useState<OnlineIntent>('create')
+  const [joinRoomCode, setJoinRoomCode] = useState<string | undefined>()
 
-  // The persisted game shown as "Continue" on the menu.
+  // The persisted game shown as "Continue" on the home screen.
   // Updated in-place by a ref during play to avoid causing re-renders.
   const [savedGame, setSavedGame] = useState<GameState | null>(null)
   const savedGameRef = useRef<GameState | null>(null)
@@ -30,19 +42,65 @@ function App() {
   // Restored seat config and settings for the menu
   const [initialSeats, setInitialSeats] = useState<SeatDraft[] | null>(null)
   const [initialSettings, setInitialSettings] = useState<GameSettings | null>(null)
+  const [onlineProfile, setOnlineProfile] = useState<OnlineProfile | null>(null)
 
-  // Boot: load prefs and any active game from storage
-  useEffect(() => {
-    Promise.all([loadPrefs(), loadActiveGame()]).then(([prefs, activeGame]) => {
-      if (prefs) {
-        setInitialSeats(prefs.seats)
-        setInitialSettings(prefs.settings)
-      }
-      savedGameRef.current = activeGame
-      setSavedGame(activeGame)
-      setLoading(false)
-    })
+  const openJoinWithCode = useCallback((code: string) => {
+    setGameState(null)
+    setOnlineIntent('join')
+    setJoinRoomCode(code)
+    setMenuView('online')
   }, [])
+
+  // Boot: load prefs, active game, online profile, and any join deep link
+  useEffect(() => {
+    const fromLocation = consumeJoinCodeFromLocation()
+    Promise.all([loadPrefs(), loadActiveGame(), loadOnlineProfile()]).then(
+      async ([prefs, activeGame, profile]) => {
+        if (prefs) {
+          setInitialSeats(prefs.seats)
+          setInitialSettings(prefs.settings)
+        }
+        setOnlineProfile(profile)
+        savedGameRef.current = activeGame
+        setSavedGame(activeGame)
+
+        let joinCode = fromLocation
+        if (!joinCode) {
+          try {
+            const launch = await CapApp.getLaunchUrl()
+            if (launch?.url) joinCode = parseJoinCodeFromUrl(launch.url)
+          } catch {
+            // Web / unsupported — ignore
+          }
+        }
+        if (joinCode) {
+          setOnlineIntent('join')
+          setJoinRoomCode(joinCode)
+          setMenuView('online')
+        }
+        setLoading(false)
+      },
+    )
+  }, [])
+
+  // Warm start / resume: listen for app URL opens (custom scheme + App Links)
+  useEffect(() => {
+    let handle: { remove: () => Promise<void> } | undefined
+    const listen = async () => {
+      try {
+        handle = await CapApp.addListener('appUrlOpen', ({ url }) => {
+          const code = parseJoinCodeFromUrl(url)
+          if (code) openJoinWithCode(code)
+        })
+      } catch {
+        // Web — no native listener
+      }
+    }
+    void listen()
+    return () => {
+      void handle?.remove()
+    }
+  }, [openJoinWithCode])
 
   // Called by MenuScreen to start a brand-new game
   const handleStart = useCallback(async (players: PlayerSetup[]) => {
@@ -53,12 +111,12 @@ function App() {
     setGameState(newState)
   }, [])
 
-  // Called by MenuScreen "Continue Game"
+  // Called by HomeScreen "Continue Game"
   const handleContinue = useCallback(() => {
     if (savedGameRef.current) setGameState(savedGameRef.current)
   }, [])
 
-  // Called by MenuScreen "Quit & Start New Game"
+  // Called by HomeScreen "Start New Game" — clears the save before solo setup
   const handleQuit = useCallback(async () => {
     await clearActiveGame()
     savedGameRef.current = null
@@ -82,16 +140,38 @@ function App() {
   const handleReturnToMenu = useCallback(() => {
     setSavedGame(savedGameRef.current)
     setGameState(null)
+    setMenuView('home')
   }, [])
+
+  const refreshOnlineProfile = useCallback(async () => {
+    setOnlineProfile(await loadOnlineProfile())
+  }, [])
+
+  const openOnline = useCallback((intent: OnlineIntent) => {
+    void refreshOnlineProfile()
+    setOnlineIntent(intent)
+    setJoinRoomCode(undefined)
+    setMenuView('online')
+  }, [refreshOnlineProfile])
 
   if (loading) return null
 
-  if (onlineOpen) {
+  if (menuView === 'online') {
     return (
       <OnlineSession
-        onBack={() => setOnlineOpen(false)}
+        key={`${onlineIntent}:${joinRoomCode ?? ''}`}
+        intent={onlineIntent}
+        initialRoomCode={joinRoomCode}
+        onBack={() => {
+          setJoinRoomCode(undefined)
+          setMenuView('home')
+          void refreshOnlineProfile()
+        }}
         settings={initialSettings ?? undefined}
-        defaultAvatarId={initialSeats?.[0]?.avatarId}
+        defaultDisplayName={onlineProfile?.displayName}
+        defaultAvatarId={
+          onlineProfile?.avatarId ?? initialSeats?.[0]?.avatarId
+        }
       />
     )
   }
@@ -108,15 +188,25 @@ function App() {
     )
   }
 
+  if (menuView === 'solo') {
+    return (
+      <MenuScreen
+        initialSeats={initialSeats ?? undefined}
+        initialSettings={initialSettings ?? undefined}
+        onStart={handleStart}
+        onBack={() => setMenuView('home')}
+      />
+    )
+  }
+
   return (
-    <MenuScreen
-      initialSeats={initialSeats ?? undefined}
-      initialSettings={initialSettings ?? undefined}
+    <HomeScreen
       activeGame={savedGame}
-      onStart={handleStart}
+      onSoloSetup={() => setMenuView('solo')}
       onContinue={handleContinue}
       onQuit={handleQuit}
-      onOnline={() => setOnlineOpen(true)}
+      onCreateOnline={() => openOnline('create')}
+      onJoinOnline={() => openOnline('join')}
     />
   )
 }

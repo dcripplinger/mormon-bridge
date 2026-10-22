@@ -57,17 +57,16 @@ export class RoomClient {
   }
 }
 
-/** HTTP create room → { roomCode }. */
+/** HTTP create room → { roomCode }. Server assigns a unique short code. */
 export async function createRoom(
   apiBase: string,
-  password: string,
   tableSize?: number,
 ): Promise<{ roomCode: string }> {
   const base = apiBase.replace(/\/$/, '')
   const res = await fetch(`${base}/api/rooms`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password, tableSize }),
+    body: JSON.stringify({ tableSize }),
   })
   const body = await res.json() as { roomCode?: string; error?: string }
   if (!res.ok || !body.roomCode) {
