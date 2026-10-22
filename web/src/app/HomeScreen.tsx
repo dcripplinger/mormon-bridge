@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState } from 'react'
 import type { GameState } from '../game/state'
 import type { ApiReachability } from '../net/use-api-reachable'
 
@@ -90,22 +90,22 @@ export default function HomeScreen({
           boxSizing: 'border-box',
         }}
       >
-        <button type="button" onClick={handleSinglePlayer} style={primaryButtonStyle}>
+        <button type="button" className="btn btn--primary btn--block" onClick={handleSinglePlayer}>
           Single Player
         </button>
         <button
           type="button"
+          className="btn btn--primary btn--block"
           onClick={onCreateOnline}
           disabled={!onlineEnabled}
-          style={onlineEnabled ? primaryButtonStyle : disabledButtonStyle}
         >
           Create Online Game
         </button>
         <button
           type="button"
+          className="btn btn--primary btn--block"
           onClick={onJoinOnline}
           disabled={!onlineEnabled}
-          style={onlineEnabled ? primaryButtonStyle : disabledButtonStyle}
         >
           Join Online Game
         </button>
@@ -216,38 +216,13 @@ function ContinueModal({
         <p style={{ margin: 0, color: 'var(--text-dim)', fontSize: '0.9rem', lineHeight: 1.4 }}>
           You have a single player game in progress. Continue where you left off, or start a new one.
         </p>
-        <button type="button" onClick={onContinue} style={primaryButtonStyle}>
+        <button type="button" className="btn btn--primary btn--block" onClick={onContinue}>
           Continue Game
         </button>
-        <button type="button" onClick={onStartNew} style={secondaryButtonStyle}>
+        <button type="button" className="btn btn--secondary btn--block" onClick={onStartNew}>
           Start New Game
         </button>
       </div>
     </>
   )
-}
-
-const primaryButtonStyle: CSSProperties = {
-  background: 'var(--accent)',
-  color: '#1a1a1a',
-  padding: '12px',
-  borderRadius: '8px',
-  fontSize: '1.05rem',
-  fontWeight: 'bold',
-}
-
-const secondaryButtonStyle: CSSProperties = {
-  background: 'var(--surface-2)',
-  color: 'var(--text)',
-  border: '1px solid var(--border)',
-  padding: '12px',
-  borderRadius: '8px',
-  fontSize: '0.95rem',
-  fontWeight: 600,
-}
-
-const disabledButtonStyle: CSSProperties = {
-  ...primaryButtonStyle,
-  opacity: 0.45,
-  cursor: 'not-allowed',
 }

@@ -221,19 +221,7 @@ export default function MenuScreen({
           >
             Single Player
           </h1>
-          <button
-            type="button"
-            onClick={onBack}
-            style={{
-              background: 'transparent',
-              color: 'var(--text-dim)',
-              border: '1px solid var(--border)',
-              padding: '6px 10px',
-              borderRadius: '8px',
-              fontSize: '0.85rem',
-              fontWeight: 600,
-            }}
-          >
+          <button type="button" className="btn btn--ghost btn--slim" onClick={onBack}>
             Back
           </button>
         </div>
@@ -354,49 +342,23 @@ export default function MenuScreen({
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
             type="button"
+            className="btn btn--secondary"
             onClick={openSettings}
-            style={{
-              flex: 1,
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-              border: '1px solid var(--border)',
-              padding: '10px 8px',
-              borderRadius: '8px',
-              fontSize: '0.85rem',
-              fontWeight: 600,
-            }}
+            style={{ flex: 1 }}
           >
             Game Settings
           </button>
           <button
             type="button"
+            className="btn btn--secondary"
             onClick={openHowToPlay}
-            style={{
-              flex: 1,
-              background: 'var(--surface-2)',
-              color: 'var(--text)',
-              border: '1px solid var(--border)',
-              padding: '10px 8px',
-              borderRadius: '8px',
-              fontSize: '0.85rem',
-              fontWeight: 600,
-            }}
+            style={{ flex: 1 }}
           >
             How to Play
           </button>
         </div>
 
-        <button
-          onClick={handleStart}
-          style={{
-            background: 'var(--accent)',
-            color: '#1a1a1a',
-            padding: '12px',
-            borderRadius: '8px',
-            fontSize: '1.05rem',
-            fontWeight: 'bold',
-          }}
-        >
+        <button type="button" className="btn btn--primary btn--block" onClick={handleStart}>
           Start Game
         </button>
       </div>
@@ -528,32 +490,13 @@ function SettingSelect({
   onChange: (value: string) => void
 }) {
   return (
-    <label
-      htmlFor={id}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '6px',
-        color: 'var(--text)',
-        fontSize: '0.85rem',
-        fontWeight: 600,
-      }}
-    >
+    <label htmlFor={id} className="field" style={{ maxWidth: 'none' }}>
       {label}
       <select
         id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        style={{
-          background: 'var(--surface-2)',
-          color: 'var(--text)',
-          border: '1px solid var(--border)',
-          borderRadius: '8px',
-          padding: '10px 12px',
-          fontSize: '0.9rem',
-          fontFamily: 'inherit',
-          fontWeight: 500,
-        }}
+        className="field__control"
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
@@ -607,17 +550,7 @@ function GameSettingsModal({
           />
         )}
       </div>
-      <button
-        type="button"
-        onClick={onClose}
-        style={{
-          background: 'var(--accent)',
-          color: '#1a1a1a',
-          padding: '10px',
-          borderRadius: '8px',
-          fontWeight: 700,
-        }}
-      >
+      <button type="button" className="btn btn--primary btn--block" onClick={onClose}>
         Done
       </button>
     </ModalShell>
@@ -682,17 +615,7 @@ function HowToPlayModal({ onClose }: { onClose: () => void }) {
           they take it plus a penalty card from the deck.
         </p>
       </div>
-      <button
-        type="button"
-        onClick={onClose}
-        style={{
-          background: 'var(--accent)',
-          color: '#1a1a1a',
-          padding: '10px',
-          borderRadius: '8px',
-          fontWeight: 700,
-        }}
-      >
+      <button type="button" className="btn btn--primary btn--block" onClick={onClose}>
         Got it
       </button>
     </ModalShell>

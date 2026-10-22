@@ -4,7 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from 'react'
 import {
@@ -190,7 +189,12 @@ export default function OnlineSession({
   displayNameRef.current = displayName
   const avatarIdRef = useRef(avatarId)
   avatarIdRef.current = avatarId
+  const roomCodeRef = useRef(roomCode)
+  roomCodeRef.current = roomCode
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const rejoinInFlightRef = useRef(false)
+  /** If set, send setReady after a successful re-join (session recovery). */
+  const pendingReadyRef = useRef<boolean | null>(null)
 
   const reportConnectionLost = useCallback(() => {
     if (connectionLostRef.current) return
@@ -226,11 +230,35 @@ export default function OnlineSession({
     void saveOnlineProfile({ displayName: trimmed, avatarId: nextAvatarId })
   }, [])
 
+  const rejoinWithToken = useCallback(async () => {
+    if (rejoinInFlightRef.current || connectionLostRef.current) return
+    const client = clientRef.current
+    const code = normalizeRoomCode(roomCodeRef.current)
+    if (!client || !code) return
+    rejoinInFlightRef.current = true
+    try {
+      const stored = await loadReconnect(isGuestRef.current)
+      const token =
+        stored && stored.roomCode === code ? stored.reconnectToken : undefined
+      client.send({
+        type: 'join',
+        displayName: displayNameRef.current.trim() || 'Player',
+        avatarId: avatarIdRef.current,
+        reconnectToken: token,
+      })
+    } finally {
+      window.setTimeout(() => {
+        rejoinInFlightRef.current = false
+      }, 2000)
+    }
+  }, [])
+
   const handleServerMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'joined':
         setSeatIndex(msg.seatIndex)
         setRoomCode(msg.roomCode)
+        rejoinInFlightRef.current = false
         void saveReconnect(isGuestRef.current, {
           roomCode: msg.roomCode,
           reconnectToken: msg.reconnectToken,
@@ -240,6 +268,12 @@ export default function OnlineSession({
         persistProfile(displayNameRef.current, avatarIdRef.current)
         setMode('lobby')
         setError(null)
+        if (pendingReadyRef.current !== null) {
+          const readyValue = pendingReadyRef.current
+          pendingReadyRef.current = null
+          setReady(readyValue)
+          clientRef.current?.send({ type: 'setReady', ready: readyValue })
+        }
         break
       case 'roomState':
         setRoom(msg.room)
@@ -251,6 +285,11 @@ export default function OnlineSession({
         setMode('playing')
         break
       case 'error':
+        // Session binding can be lost after DO hibernation; re-join with token.
+        if (msg.message === 'Join the room first') {
+          void rejoinWithToken()
+          return
+        }
         setError(msg.message)
         break
       case 'kicked':
@@ -275,12 +314,16 @@ export default function OnlineSession({
       default:
         break
     }
-  }, [persistProfile])
+  }, [persistProfile, rejoinWithToken])
 
   useEffect(() => {
     if (seatIndex === null || !room) return
     const mine = room.seats.find((s) => s.seatIndex === seatIndex)
-    if (mine) setReady(mine.ready)
+    if (!mine) return
+    setReady(mine.ready)
+    if (pendingReadyRef.current === mine.ready) {
+      pendingReadyRef.current = null
+    }
   }, [room, seatIndex])
 
   const connectAndJoinReliable = useCallback((
@@ -411,6 +454,7 @@ export default function OnlineSession({
   const toggleReady = () => {
     const next = !ready
     setReady(next)
+    pendingReadyRef.current = next
     clientRef.current?.send({ type: 'setReady', ready: next })
   }
 
@@ -423,12 +467,12 @@ export default function OnlineSession({
     clientRef.current?.send({ type: 'setTableSize', tableSize: size })
   }
 
-  const addBot = () => {
-    clientRef.current?.send({ type: 'addBot' })
-  }
-
-  const removeBot = () => {
-    clientRef.current?.send({ type: 'removeBot' })
+  const setSeatBot = (targetSeatIndex: number, isBot: boolean) => {
+    clientRef.current?.send(
+      isBot
+        ? { type: 'addBot', seatIndex: targetSeatIndex }
+        : { type: 'removeBot', seatIndex: targetSeatIndex },
+    )
   }
 
   const leave = () => {
@@ -481,150 +525,159 @@ export default function OnlineSession({
   if (mode === 'lobby' && room) {
     const isHost = seatIndex === room.hostSeatIndex
     const humans = room.seats.filter((s) => !s.isOpen && !s.isAI)
-    const openCount = room.seats.filter((s) => s.isOpen).length
-    const botCount = room.seats.filter((s) => s.isAI).length
     const canStart =
       isHost
       && humans.length >= 1
       && humans.every((s) => s.ready)
 
     return withConnectionLost(
-      <div style={shellStyle}>
-        <h1 style={{ margin: 0 }}>Room {room.roomCode}</h1>
-        {isHost && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 10,
-              width: '100%',
-              maxWidth: 360,
-            }}
-          >
-            <div
-              style={{
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                fontSize: '1.75rem',
-                fontWeight: 700,
-                letterSpacing: '0.18em',
-                color: 'var(--text)',
-              }}
-            >
-              {room.roomCode}
-            </div>
-            <p style={{ margin: 0, opacity: 0.8, textAlign: 'center', fontSize: 14 }}>
-              Share this code with friends. Anyone with the code can join.
-            </p>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-              <button type="button" onClick={() => void handleCopyCode(room.roomCode)}>
-                Copy code
-              </button>
-              <button type="button" onClick={() => void handleShareCode(room.roomCode)}>
-                Share
-              </button>
-            </div>
-            {codeFeedback && (
-              <p style={{ margin: 0, fontSize: 13, opacity: 0.8 }}>{codeFeedback}</p>
+      <div className="setup-shell setup-shell--lobby">
+        <div className="setup-shell__scroll scroll-hide">
+          <div className="setup-shell__panel setup-shell__panel--header">
+            {isHost ? (
+              <>
+                <div className="setup-code-block">
+                  <div className="setup-code-block__main">
+                    <span className="setup-code-block__label">Room code:</span>
+                    <div
+                      className="setup-code-block__code"
+                      aria-label={`Room code ${room.roomCode}`}
+                    >
+                      {room.roomCode}
+                    </div>
+                  </div>
+                  <div className="setup-code-block__actions">
+                    <button
+                      type="button"
+                      className="btn btn--secondary btn--slim"
+                      onClick={() => void handleCopyCode(room.roomCode)}
+                    >
+                      Copy
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--secondary btn--slim"
+                      onClick={() => void handleShareCode(room.roomCode)}
+                    >
+                      Share
+                    </button>
+                  </div>
+                  {codeFeedback && (
+                    <p className="setup-shell__lede" style={{ fontSize: 13 }}>
+                      {codeFeedback}
+                    </p>
+                  )}
+                </div>
+                <label className="field" style={{ maxWidth: 'none' }}>
+                  Table size
+                  <select
+                    value={room.tableSize}
+                    onChange={(e) => changeTableSize(Number(e.target.value))}
+                    className="field__control"
+                  >
+                    {Array.from(
+                      { length: room.maxPlayers - room.minPlayers + 1 },
+                      (_, i) => room.minPlayers + i,
+                    ).map((n) => (
+                      <option key={n} value={n}>{n} seats</option>
+                    ))}
+                  </select>
+                </label>
+                <p className="setup-shell__lede" style={{ fontSize: 13 }}>
+                  Open seats become bots when you start.
+                </p>
+              </>
+            ) : (
+              <p className="setup-shell__lede">
+                Table of {room.tableSize}. Waiting for the host to start.
+              </p>
             )}
           </div>
-        )}
-        {!isHost && (
-          <p style={{ margin: 0, opacity: 0.8 }}>
-            Table of {room.tableSize} ({room.minPlayers}–{room.maxPlayers}).
-            Open seats become bots when the host starts.
+
+          <ul className="setup-seat-list setup-shell__panel setup-shell__panel--seats">
+            {room.seats.map((s) => {
+              const isHuman = !s.isOpen && !s.isAI
+              const showBotToggle = isHost && (s.isOpen || s.isAI)
+              const isSelf = s.seatIndex === seatIndex
+              return (
+                <li key={s.seatIndex} className="setup-seat-list__item">
+                  {s.isOpen ? (
+                    <div className="setup-seat-list__open-avatar" />
+                  ) : (
+                    <AvatarView avatarId={s.avatarId} size={40} />
+                  )}
+                  <div className="setup-seat-list__meta">
+                    <div
+                      className={`setup-seat-list__name${s.isOpen ? ' setup-seat-list__name--open' : ''}`}
+                    >
+                      {s.isOpen
+                        ? 'Open seat'
+                        : s.displayName}
+                      {isSelf ? ' (you)' : ''}
+                      {isHuman && s.seatIndex === room.hostSeatIndex ? ' · host' : ''}
+                    </div>
+                    <div className="setup-seat-list__status">
+                      {s.isOpen
+                        ? 'waiting for player'
+                        : s.isAI
+                          ? 'bot'
+                          : s.connected
+                            ? 'connected'
+                            : 'disconnected'}
+                    </div>
+                  </div>
+                  {showBotToggle && (
+                    <label className="setup-seat-list__check">
+                      <input
+                        type="checkbox"
+                        checked={s.isAI}
+                        onChange={(e) => setSeatBot(s.seatIndex, e.target.checked)}
+                      />
+                      Bot
+                    </label>
+                  )}
+                  {isHuman && (
+                    <label
+                      className={`setup-seat-list__check${isSelf ? '' : ' setup-seat-list__check--readonly'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={s.ready}
+                        disabled={!isSelf}
+                        onChange={() => {
+                          if (isSelf) toggleReady()
+                        }}
+                      />
+                      Ready
+                    </label>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+
+        {error && (
+          <p style={{ color: 'var(--danger)', margin: '8px 0 0', textAlign: 'center' }}>
+            {error}
           </p>
         )}
-        {isHost && (
-          <>
-            <p style={{ margin: 0, opacity: 0.8, textAlign: 'center', maxWidth: 360 }}>
-              Table of {room.tableSize} ({room.minPlayers}–{room.maxPlayers}).
-              Open seats become bots when you start.
-            </p>
-            <label style={labelStyle}>
-              Table size
-              <select
-                value={room.tableSize}
-                onChange={(e) => changeTableSize(Number(e.target.value))}
-                style={inputStyle}
-              >
-                {Array.from(
-                  { length: room.maxPlayers - room.minPlayers + 1 },
-                  (_, i) => room.minPlayers + i,
-                ).map((n) => (
-                  <option key={n} value={n}>{n} seats</option>
-                ))}
-              </select>
-            </label>
-          </>
-        )}
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0, width: '100%', maxWidth: 360 }}>
-          {room.seats.map((s) => (
-            <li
-              key={s.seatIndex}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-                padding: '8px 0',
-                borderBottom: '1px solid rgba(0,0,0,0.08)',
-                opacity: s.isOpen ? 0.55 : 1,
-              }}
-            >
-              {s.isOpen ? (
-                <div
-                  style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: 8,
-                    border: '1px dashed rgba(0,0,0,0.25)',
-                    boxSizing: 'border-box',
-                  }}
-                />
-              ) : (
-                <AvatarView avatarId={s.avatarId} size={40} />
-              )}
-              <div style={{ flex: 1 }}>
-                <div>
-                  {s.isOpen
-                    ? 'Open seat'
-                    : s.displayName}
-                  {!s.isOpen && s.seatIndex === seatIndex ? ' (you)' : ''}
-                  {!s.isOpen && s.seatIndex === room.hostSeatIndex ? ' · host' : ''}
-                  {s.isAI ? ' · bot' : ''}
-                </div>
-                <div style={{ fontSize: 13, opacity: 0.7 }}>
-                  {s.isOpen
-                    ? 'waiting for player or bot'
-                    : s.isAI
-                      ? 'bot'
-                      : `${s.connected ? 'connected' : 'disconnected'}${s.ready ? ' · ready' : ''}`}
-                </div>
-              </div>
-            </li>
-          ))}
-        </ul>
-        {error && <p style={{ color: '#b33', margin: 0 }}>{error}</p>}
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
-          <button type="button" onClick={toggleReady}>
-            {ready ? 'Unready' : 'Ready'}
-          </button>
+        <div className="setup-shell__actions">
           {isHost && (
-            <>
-              <button type="button" onClick={addBot} disabled={openCount === 0}>
-                Add bot
-              </button>
-              <button type="button" onClick={removeBot} disabled={botCount === 0}>
-                Remove bot
-              </button>
-              <button type="button" onClick={startGame} disabled={!canStart}>
-                Start game
-              </button>
-            </>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={startGame}
+              disabled={!canStart}
+            >
+              Start game
+            </button>
           )}
-          <button type="button" onClick={leave}>Leave</button>
+          <button type="button" className="btn btn--ghost" onClick={leave}>
+            Leave
+          </button>
           {import.meta.env.DEV && (
-            <button type="button" onClick={openGuestTab}>
+            <button type="button" className="btn btn--ghost" onClick={openGuestTab}>
               Open guest tab
             </button>
           )}
@@ -637,97 +690,111 @@ export default function OnlineSession({
   const nameLabel = displayName.trim() || 'You'
 
   return withConnectionLost(
-    <div style={shellStyle}>
-      <h1 style={{ margin: 0 }}>
-        {isCreate ? 'Create Online Game' : 'Join Online Game'}
-      </h1>
-      <p style={{ margin: 0, opacity: 0.8, maxWidth: 360, textAlign: 'center' }}>
-        {isCreate
-          ? 'Create a private room. You will get a short code to share with friends.'
-          : 'Enter the room code shared by the host.'}
-      </p>
-      {isGuest && (
-        <p style={{ margin: 0, opacity: 0.7, fontSize: 13, textAlign: 'center' }}>
-          Dev guest tab — identity stays in this tab only.
-        </p>
-      )}
+    <div className="setup-shell">
+      <div className="setup-shell__scroll scroll-hide">
+        <div className="setup-shell__panel">
+          <h1 className="setup-shell__title">
+            {isCreate ? 'Create Online Game' : 'Join Online Game'}
+          </h1>
+          <p className="setup-shell__lede">
+            {isCreate
+              ? 'Create a private room. You will get a short code to share with friends.'
+              : 'Enter the room code shared by the host.'}
+          </p>
+          {isGuest && (
+            <p className="setup-shell__lede" style={{ fontSize: 13 }}>
+              Dev guest tab — identity stays in this tab only.
+            </p>
+          )}
 
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 14,
-          width: '100%',
-          maxWidth: 320,
-        }}
-      >
-        <button
-          type="button"
-          onClick={() => setAvatarPickerOpen(true)}
-          aria-label="Change avatar"
-          style={{
-            background: 'transparent',
-            border: '2px solid var(--border)',
-            borderRadius: '50%',
-            padding: 2,
-            lineHeight: 0,
-            flexShrink: 0,
-          }}
-        >
-          <AvatarView avatarId={avatarId} size={56} alt="" />
-        </button>
-        <label style={{ ...labelStyle, flex: 1, maxWidth: 'none' }}>
-          Display name
-          <input
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            style={inputStyle}
-            autoComplete="nickname"
-          />
-        </label>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
+              width: '100%',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setAvatarPickerOpen(true)}
+              aria-label="Change avatar"
+              style={{
+                background: 'transparent',
+                border: '2px solid var(--border)',
+                borderRadius: '50%',
+                padding: 2,
+                lineHeight: 0,
+                flexShrink: 0,
+              }}
+            >
+              <AvatarView avatarId={avatarId} size={56} alt="" />
+            </button>
+            <label className="field" style={{ flex: 1, maxWidth: 'none' }}>
+              Display name
+              <input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                className="field__control"
+                autoComplete="nickname"
+              />
+            </label>
+          </div>
+
+          {!isCreate && (
+            <label className="field" style={{ maxWidth: 'none' }}>
+              Room code
+              <input
+                value={roomCode}
+                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                placeholder="ABCD12"
+                className="field__control"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+            </label>
+          )}
+          {isCreate && (
+            <label className="field" style={{ maxWidth: 'none' }}>
+              Table size
+              <select
+                value={tableSize}
+                onChange={(e) => setTableSize(Number(e.target.value))}
+                className="field__control"
+              >
+                {Array.from(
+                  { length: MAX_ROOM_PLAYERS - MIN_ROOM_PLAYERS + 1 },
+                  (_, i) => MIN_ROOM_PLAYERS + i,
+                ).map((n) => (
+                  <option key={n} value={n}>{n} seats</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </div>
 
-      {!isCreate && (
-        <label style={labelStyle}>
-          Room code
-          <input
-            value={roomCode}
-            onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-            placeholder="ABCD12"
-            style={inputStyle}
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </label>
+      {error && (
+        <p style={{ color: 'var(--danger)', margin: '8px 0 0', textAlign: 'center' }}>
+          {error}
+        </p>
       )}
-      {isCreate && (
-        <label style={labelStyle}>
-          Table size
-          <select
-            value={tableSize}
-            onChange={(e) => setTableSize(Number(e.target.value))}
-            style={inputStyle}
-          >
-            {Array.from(
-              { length: MAX_ROOM_PLAYERS - MIN_ROOM_PLAYERS + 1 },
-              (_, i) => MIN_ROOM_PLAYERS + i,
-            ).map((n) => (
-              <option key={n} value={n}>{n} seats</option>
-            ))}
-          </select>
-        </label>
-      )}
-      {error && <p style={{ color: '#b33', margin: 0 }}>{error}</p>}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
+      <div className="setup-shell__actions">
         {isCreate ? (
-          <button type="button" onClick={() => void handleCreate()}>Create room</button>
+          <button type="button" className="btn btn--primary" onClick={() => void handleCreate()}>
+            Create room
+          </button>
         ) : (
-          <button type="button" onClick={handleJoin}>Join room</button>
+          <button type="button" className="btn btn--primary" onClick={handleJoin}>
+            Join room
+          </button>
         )}
-        <button type="button" onClick={onBack}>Back</button>
+        <button type="button" className="btn btn--ghost" onClick={onBack}>
+          Back
+        </button>
         {import.meta.env.DEV && (
-          <button type="button" onClick={openGuestTab}>
+          <button type="button" className="btn btn--ghost" onClick={openGuestTab}>
             Open guest tab
           </button>
         )}
@@ -799,19 +866,7 @@ function ConnectionLostModal({ onClose }: { onClose: () => void }) {
           Lost connection to the game server. You can keep playing single player, or try online
           again when you are back online.
         </p>
-        <button
-          type="button"
-          onClick={onClose}
-          style={{
-            background: 'var(--accent)',
-            color: '#1a1a1a',
-            padding: '12px',
-            borderRadius: '8px',
-            fontSize: '1.05rem',
-            fontWeight: 'bold',
-            border: 'none',
-          }}
-        >
+        <button type="button" className="btn btn--primary btn--block" onClick={onClose}>
           Return to menu
         </button>
       </div>
@@ -819,27 +874,4 @@ function ConnectionLostModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-const shellStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'center',
-  height: '100%',
-  gap: 16,
-  padding: 24,
-  boxSizing: 'border-box',
-}
 
-const labelStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  width: '100%',
-  maxWidth: 320,
-  fontSize: 14,
-}
-
-const inputStyle: CSSProperties = {
-  padding: '8px 10px',
-  fontSize: 16,
-}

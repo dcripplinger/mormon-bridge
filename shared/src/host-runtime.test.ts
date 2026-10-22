@@ -204,6 +204,52 @@ describe('HostRuntime', () => {
     expect(view.view.players.filter((p) => p.isAI)).toHaveLength(2)
   })
 
+  it('preserves session ids across snapshot restore for hibernation', async () => {
+    const host = HostRuntime.create('HIBER1')
+    const { sink } = collectSink()
+    host.setSink(sink)
+    host.onConnect({ sessionId: 's0' })
+    await host.onMessage('s0', {
+      type: 'join',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    const snap = host.serialize()
+    expect(snap.seats[0].sessionId).toBe('s0')
+
+    const restored = HostRuntime.fromSnapshot(snap)
+    restored.setSink(sink)
+    expect(restored.roomPublicState().seats[0].connected).toBe(true)
+
+    restored.retainOnlySessions(new Set(['s0']))
+    await restored.onMessage('s0', { type: 'setReady', ready: true })
+    expect(restored.roomPublicState().seats[0].ready).toBe(true)
+
+    restored.retainOnlySessions(new Set())
+    expect(restored.roomPublicState().seats[0].connected).toBe(false)
+  })
+
+  it('host can toggle a specific seat between open and bot', async () => {
+    const host = HostRuntime.create('BOTCHK', undefined, 3)
+    const { sink } = collectSink()
+    host.setSink(sink)
+    host.onConnect({ sessionId: 's0' })
+    await host.onMessage('s0', {
+      type: 'join',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    await host.onMessage('s0', { type: 'addBot', seatIndex: 2 })
+    let seats = host.roomPublicState().seats
+    expect(seats[1].isOpen).toBe(true)
+    expect(seats[2].isAI).toBe(true)
+
+    await host.onMessage('s0', { type: 'removeBot', seatIndex: 2 })
+    seats = host.roomPublicState().seats
+    expect(seats[2].isOpen).toBe(true)
+    expect(seats[2].isAI).toBe(false)
+  })
+
   it('lets a joining human replace a lobby bot', async () => {
     const host = HostRuntime.create('REPL01', undefined, 3)
     const { sink } = collectSink()
@@ -214,8 +260,8 @@ describe('HostRuntime', () => {
       displayName: 'Ada',
       avatarId: 'h01',
     })
-    await host.onMessage('s0', { type: 'addBot' })
-    await host.onMessage('s0', { type: 'addBot' })
+    await host.onMessage('s0', { type: 'addBot', seatIndex: 1 })
+    await host.onMessage('s0', { type: 'addBot', seatIndex: 2 })
     expect(host.roomPublicState().seats.filter((s) => s.isAI)).toHaveLength(2)
 
     host.onConnect({ sessionId: 's1' })
@@ -243,7 +289,7 @@ describe('HostRuntime', () => {
     expect(host.roomPublicState().tableSize).toBe(5)
     expect(host.roomPublicState().seats).toHaveLength(5)
 
-    await host.onMessage('s0', { type: 'addBot' })
+    await host.onMessage('s0', { type: 'addBot', seatIndex: 1 })
     await host.onMessage('s0', { type: 'setTableSize', tableSize: 3 })
     expect(host.roomPublicState().tableSize).toBe(3)
     expect(host.roomPublicState().seats).toHaveLength(3)

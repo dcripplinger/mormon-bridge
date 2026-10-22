@@ -133,9 +133,11 @@ export class HostRuntime {
       this.tableSize = clampTableSize(
         opts.snapshot.tableSize ?? opts.snapshot.seats.length ?? DEFAULT_TABLE_SIZE,
       )
+      // Keep sessionIds so hibernatable WebSockets can resume without re-join.
+      // Transport must call retainOnlySessions() with live socket ids on wake.
       this.seats = opts.snapshot.seats.map((s) => ({
         ...s,
-        sessionId: null,
+        sessionId: s.sessionId ?? null,
         isOpen: s.isOpen ?? false,
       }))
       this.ensureLobbySlots()
@@ -164,6 +166,21 @@ export class HostRuntime {
 
   setSink(sink: HostSink | null): void {
     this.sink = sink
+  }
+
+  /**
+   * After loading a snapshot (or on transport wake), drop seat bindings for
+   * sessions that no longer have a live socket.
+   */
+  retainOnlySessions(liveSessionIds: ReadonlySet<string>): void {
+    let changed = false
+    for (const s of this.seats) {
+      if (s.sessionId && !liveSessionIds.has(s.sessionId)) {
+        s.sessionId = null
+        changed = true
+      }
+    }
+    if (changed) this.broadcastRoom()
   }
 
   serialize(): HostRuntimeSnapshot {
@@ -226,10 +243,10 @@ export class HostRuntime {
         this.handleSetTableSize(seat, msg.tableSize)
         return
       case 'addBot':
-        this.handleAddBot(seat)
+        this.handleAddBot(seat, msg.seatIndex)
         return
       case 'removeBot':
-        this.handleRemoveBot(seat)
+        this.handleRemoveBot(seat, msg.seatIndex)
         return
       default:
         this.handlePlay(sessionId, seat, msg)
@@ -606,7 +623,7 @@ export class HostRuntime {
     this.broadcastRoom()
   }
 
-  private handleAddBot(seat: SeatRecord): void {
+  private handleAddBot(seat: SeatRecord, seatIndex: number): void {
     if (this.phase !== 'lobby') {
       if (seat.sessionId) {
         this.send(seat.sessionId, { type: 'error', message: 'Game already started' })
@@ -619,18 +636,18 @@ export class HostRuntime {
       }
       return
     }
-    const open = this.seats.find((s) => s.isOpen)
-    if (!open) {
+    const target = this.seats[seatIndex]
+    if (!target || !target.isOpen) {
       if (seat.sessionId) {
-        this.send(seat.sessionId, { type: 'error', message: 'No open seats' })
+        this.send(seat.sessionId, { type: 'error', message: 'Seat is not open' })
       }
       return
     }
-    this.fillSeatAsBot(open)
+    this.fillSeatAsBot(target)
     this.broadcastRoom()
   }
 
-  private handleRemoveBot(seat: SeatRecord): void {
+  private handleRemoveBot(seat: SeatRecord, seatIndex: number): void {
     if (this.phase !== 'lobby') {
       if (seat.sessionId) {
         this.send(seat.sessionId, { type: 'error', message: 'Game already started' })
@@ -643,20 +660,14 @@ export class HostRuntime {
       }
       return
     }
-    let bot: SeatRecord | undefined
-    for (let i = this.seats.length - 1; i >= 0; i--) {
-      if (this.seats[i].isAI) {
-        bot = this.seats[i]
-        break
-      }
-    }
-    if (!bot) {
+    const target = this.seats[seatIndex]
+    if (!target || !target.isAI) {
       if (seat.sessionId) {
-        this.send(seat.sessionId, { type: 'error', message: 'No bots to remove' })
+        this.send(seat.sessionId, { type: 'error', message: 'Seat is not a bot' })
       }
       return
     }
-    this.clearSeatToOpen(bot)
+    this.clearSeatToOpen(target)
     this.broadcastRoom()
   }
 

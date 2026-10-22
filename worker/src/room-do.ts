@@ -27,6 +27,7 @@ export class RoomDurableObject implements DurableObject {
       if (snap) {
         this.runtime = HostRuntime.fromSnapshot(snap)
         this.attachSink()
+        this.syncLiveSessions()
       }
     })
   }
@@ -127,6 +128,7 @@ export class RoomDurableObject implements DurableObject {
     if (!sessionId || !this.runtime) return
     this.sessions.set(sessionId, ws)
     this.attachSink()
+    this.syncLiveSessions()
 
     let msg: ClientMessage
     try {
@@ -158,6 +160,22 @@ export class RoomDurableObject implements DurableObject {
   private sessionIdOf(ws: WebSocket): string | null {
     const att = ws.deserializeAttachment() as { sessionId?: string } | null
     return att?.sessionId ?? null
+  }
+
+  /** Rebuild the socket map from hibernated sockets and prune dead seat bindings. */
+  private syncLiveSessions(): void {
+    if (!this.runtime) return
+    const live = new Set<string>()
+    for (const socket of this.state.getWebSockets()) {
+      const id = this.sessionIdOf(socket)
+      if (!id) continue
+      live.add(id)
+      this.sessions.set(id, socket)
+    }
+    for (const id of [...this.sessions.keys()]) {
+      if (!live.has(id)) this.sessions.delete(id)
+    }
+    this.runtime.retainOnlySessions(live)
   }
 
   private attachSink(): void {

@@ -16,10 +16,10 @@ export type ClientMessage =
   | { type: 'startGame' }
   /** Host-only: fixed lobby size (3–5). */
   | { type: 'setTableSize'; tableSize: number }
-  /** Host-only: turn an open seat into a bot. */
-  | { type: 'addBot' }
-  /** Host-only: turn a bot seat back into open. */
-  | { type: 'removeBot' }
+  /** Host-only: turn a specific open seat into a bot. */
+  | { type: 'addBot'; seatIndex: number }
+  /** Host-only: turn a specific bot seat back into open. */
+  | { type: 'removeBot'; seatIndex: number }
   | { type: 'declareBuy'; elapsedMs: number }
   | { type: 'claimDiscard' }
   | { type: 'drawDeck' }

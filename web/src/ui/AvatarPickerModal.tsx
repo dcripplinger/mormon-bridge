@@ -135,17 +135,7 @@ export default function AvatarPickerModal({
           })}
         </div>
 
-        <button
-          type="button"
-          onClick={onClose}
-          style={{
-            background: 'var(--accent)',
-            color: '#1a1a1a',
-            padding: '10px',
-            borderRadius: '8px',
-            fontWeight: 700,
-          }}
-        >
+        <button type="button" className="btn btn--primary btn--block" onClick={onClose}>
           Done
         </button>
       </div>
