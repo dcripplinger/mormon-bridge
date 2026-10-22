@@ -17,7 +17,25 @@ import {
   buildShareJoinUrl,
   buildWebJoinUrl,
 } from './join-link'
-import { saveOnlineProfile } from './persistence'
+import {
+  clearOnlineReconnect,
+  loadOnlineReconnect,
+  saveOnlineProfile,
+  saveOnlineReconnect,
+  type OnlineReconnect,
+} from './persistence'
+import {
+  RECONNECTED_ELSEWHERE,
+  buildGuestOpenUrl,
+  clearSessionReconnect,
+  formatKickReason,
+  guestDisplayName,
+  isDevGuestMode,
+  loadSessionReconnect,
+  nextGuestId,
+  readGuestParam,
+  saveSessionReconnect,
+} from './online-guest'
 import type { GameSettings } from './types'
 import { actionToClientMessage } from '../net/action-to-message'
 import { clientViewToGameState } from '../net/client-view-state'
@@ -42,45 +60,38 @@ interface Props {
   initialRoomCode?: string
 }
 
-const RECONNECT_KEY = 'mb:online-reconnect'
-
-interface StoredReconnect {
-  roomCode: string
-  reconnectToken: string
-  displayName: string
-  avatarId: string
+function readGuestFromLocation(): string | null {
+  if (typeof window === 'undefined') return null
+  if (!isDevGuestMode(import.meta.env.DEV, window.location.search)) return null
+  return readGuestParam(window.location.search)
 }
 
-function loadReconnect(): StoredReconnect | null {
-  try {
-    const raw = sessionStorage.getItem(RECONNECT_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<StoredReconnect>
-    if (
-      typeof parsed.roomCode !== 'string'
-      || typeof parsed.reconnectToken !== 'string'
-      || typeof parsed.displayName !== 'string'
-      || typeof parsed.avatarId !== 'string'
-    ) {
-      return null
-    }
-    return {
-      roomCode: parsed.roomCode,
-      reconnectToken: parsed.reconnectToken,
-      displayName: parsed.displayName,
-      avatarId: parsed.avatarId,
-    }
-  } catch {
-    return null
+/** Prod: Preferences (+ one-time sessionStorage migrate). Guest: session only. */
+async function loadReconnect(isGuest: boolean): Promise<OnlineReconnect | null> {
+  if (isGuest) return loadSessionReconnect()
+  const durable = await loadOnlineReconnect()
+  if (durable) return durable
+  const legacy = loadSessionReconnect()
+  if (!legacy) return null
+  await saveOnlineReconnect(legacy)
+  clearSessionReconnect()
+  return legacy
+}
+
+async function saveReconnect(isGuest: boolean, data: OnlineReconnect): Promise<void> {
+  if (isGuest) {
+    saveSessionReconnect(data)
+    return
   }
+  await saveOnlineReconnect(data)
 }
 
-function saveReconnect(data: StoredReconnect): void {
-  sessionStorage.setItem(RECONNECT_KEY, JSON.stringify(data))
-}
-
-function clearReconnect(): void {
-  sessionStorage.removeItem(RECONNECT_KEY)
+async function clearReconnect(isGuest: boolean): Promise<void> {
+  if (isGuest) {
+    clearSessionReconnect()
+    return
+  }
+  await clearOnlineReconnect()
 }
 
 function inviteText(roomCode: string): string {
@@ -139,13 +150,19 @@ export default function OnlineSession({
   initialRoomCode,
 }: Props) {
   const apiBase = defaultApiBase()
+  const guestParam = useMemo(() => readGuestFromLocation(), [])
+  const isGuest = guestParam !== null
   const [mode, setMode] = useState<Mode>('menu')
   const [error, setError] = useState<string | null>(null)
   const [roomCode, setRoomCode] = useState(() =>
     initialRoomCode ? normalizeRoomCode(initialRoomCode) : '',
   )
-  const [displayName, setDisplayName] = useState(defaultDisplayName)
-  const [avatarId, setAvatarId] = useState(() => initialAvatarId(defaultAvatarId))
+  const [displayName, setDisplayName] = useState(() =>
+    isGuest ? guestDisplayName(guestParam) : defaultDisplayName,
+  )
+  const [avatarId, setAvatarId] = useState(() =>
+    isGuest ? pickFreeAvatar('human', []) : initialAvatarId(defaultAvatarId),
+  )
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false)
   const [room, setRoom] = useState<RoomPublicState | null>(null)
   const [seatIndex, setSeatIndex] = useState<number | null>(null)
@@ -155,6 +172,8 @@ export default function OnlineSession({
   const [codeFeedback, setCodeFeedback] = useState<string | null>(null)
 
   const clientRef = useRef<RoomClient | null>(null)
+  const isGuestRef = useRef(isGuest)
+  isGuestRef.current = isGuest
   const displayNameRef = useRef(displayName)
   displayNameRef.current = displayName
   const avatarIdRef = useRef(avatarId)
@@ -181,6 +200,7 @@ export default function OnlineSession({
   }, [avatarPickerOpen])
 
   const persistProfile = useCallback((name: string, nextAvatarId: string) => {
+    if (isGuestRef.current) return
     const trimmed = name.trim()
     if (!trimmed) return
     void saveOnlineProfile({ displayName: trimmed, avatarId: nextAvatarId })
@@ -191,7 +211,7 @@ export default function OnlineSession({
       case 'joined':
         setSeatIndex(msg.seatIndex)
         setRoomCode(msg.roomCode)
-        saveReconnect({
+        void saveReconnect(isGuestRef.current, {
           roomCode: msg.roomCode,
           reconnectToken: msg.reconnectToken,
           displayName: displayNameRef.current,
@@ -214,8 +234,11 @@ export default function OnlineSession({
         setError(msg.message)
         break
       case 'kicked':
-        setError(msg.reason)
-        clearReconnect()
+        setError(formatKickReason(msg.reason))
+        // Do not clear shared Preferences on takeover — the other tab owns the seat.
+        if (msg.reason !== RECONNECTED_ELSEWHERE) {
+          void clearReconnect(isGuestRef.current)
+        }
         clientRef.current?.close()
         setMode('menu')
         setRoom(null)
@@ -223,7 +246,7 @@ export default function OnlineSession({
         break
       case 'roomClosed':
         setError('Room closed')
-        clearReconnect()
+        void clearReconnect(isGuestRef.current)
         setMode('menu')
         break
       default:
@@ -262,15 +285,21 @@ export default function OnlineSession({
   }, [apiBase, handleServerMessage])
 
   useEffect(() => {
-    const stored = loadReconnect()
-    if (!stored) return
-    const deepLinkCode = initialRoomCode ? normalizeRoomCode(initialRoomCode) : ''
-    // Deep link to a different room → show join form, do not auto-reconnect.
-    if (deepLinkCode && deepLinkCode !== stored.roomCode) return
-    setDisplayName(stored.displayName)
-    setAvatarId(initialAvatarId(stored.avatarId))
-    setRoomCode(stored.roomCode)
-    connectAndJoinReliable(stored.roomCode, stored.reconnectToken)
+    let cancelled = false
+    void (async () => {
+      const stored = await loadReconnect(isGuest)
+      if (cancelled || !stored) return
+      const deepLinkCode = initialRoomCode ? normalizeRoomCode(initialRoomCode) : ''
+      // Deep link to a different room → show join form, do not auto-reconnect.
+      if (deepLinkCode && deepLinkCode !== stored.roomCode) return
+      setDisplayName(stored.displayName)
+      setAvatarId(initialAvatarId(stored.avatarId))
+      setRoomCode(stored.roomCode)
+      connectAndJoinReliable(stored.roomCode, stored.reconnectToken)
+    })()
+    return () => {
+      cancelled = true
+    }
     // once on mount for refresh reconnect
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -299,6 +328,16 @@ export default function OnlineSession({
     }
     persistProfile(displayName, avatarId)
     connectAndJoinReliable(code)
+  }
+
+  const openGuestTab = () => {
+    if (!import.meta.env.DEV) return
+    const url = buildGuestOpenUrl(
+      window.location.href,
+      nextGuestId(guestParam),
+      roomCode || undefined,
+    )
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   const handleCopyCode = async (code: string) => {
@@ -337,7 +376,7 @@ export default function OnlineSession({
   const leave = () => {
     clientRef.current?.send({ type: 'leave' })
     clientRef.current?.close()
-    clearReconnect()
+    void clearReconnect(isGuest)
     setMode('menu')
     setRoom(null)
     setView(null)
@@ -518,6 +557,11 @@ export default function OnlineSession({
             </>
           )}
           <button type="button" onClick={leave}>Leave</button>
+          {import.meta.env.DEV && (
+            <button type="button" onClick={openGuestTab}>
+              Open guest tab
+            </button>
+          )}
         </div>
       </div>
     )
@@ -536,6 +580,11 @@ export default function OnlineSession({
           ? 'Create a private room. You will get a short code to share with friends.'
           : 'Enter the room code shared by the host.'}
       </p>
+      {isGuest && (
+        <p style={{ margin: 0, opacity: 0.7, fontSize: 13, textAlign: 'center' }}>
+          Dev guest tab — identity stays in this tab only.
+        </p>
+      )}
 
       <div
         style={{
@@ -611,6 +660,11 @@ export default function OnlineSession({
           <button type="button" onClick={handleJoin}>Join room</button>
         )}
         <button type="button" onClick={onBack}>Back</button>
+        {import.meta.env.DEV && (
+          <button type="button" onClick={openGuestTab}>
+            Open guest tab
+          </button>
+        )}
       </div>
 
       {avatarPickerOpen && (

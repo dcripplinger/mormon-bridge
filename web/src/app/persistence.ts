@@ -24,7 +24,9 @@ const GAME_VERSION = 1
 const KEY_PREFS = 'mb:prefs'
 const KEY_ACTIVE_GAME = 'mb:active-game'
 const KEY_ONLINE_PROFILE = 'mb:online-profile'
+const KEY_ONLINE_RECONNECT = 'mb:online-reconnect'
 const ONLINE_PROFILE_VERSION = 1
+const ONLINE_RECONNECT_VERSION = 1
 
 // ---------------------------------------------------------------------------
 // Stored shapes
@@ -50,6 +52,45 @@ interface StoredOnlineProfile {
   version: number
   displayName: string
   avatarId: string
+}
+
+/** Durable reconnect token so a second browser tab can take over the same seat. */
+export interface OnlineReconnect {
+  roomCode: string
+  reconnectToken: string
+  displayName: string
+  avatarId: string
+}
+
+interface StoredOnlineReconnect {
+  version: number
+  roomCode: string
+  reconnectToken: string
+  displayName: string
+  avatarId: string
+}
+
+function parseOnlineReconnect(raw: unknown): OnlineReconnect | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Partial<StoredOnlineReconnect>
+  if (o.version !== ONLINE_RECONNECT_VERSION) return null
+  if (
+    typeof o.roomCode !== 'string'
+    || typeof o.reconnectToken !== 'string'
+    || typeof o.displayName !== 'string'
+    || typeof o.avatarId !== 'string'
+  ) {
+    return null
+  }
+  if (!o.roomCode || !o.reconnectToken || !o.displayName.trim() || !o.avatarId) {
+    return null
+  }
+  return {
+    roomCode: o.roomCode,
+    reconnectToken: o.reconnectToken,
+    displayName: o.displayName,
+    avatarId: o.avatarId,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,4 +278,44 @@ export async function saveOnlineProfile(profile: OnlineProfile): Promise<void> {
   }
   if (!payload.displayName) return
   await Preferences.set({ key: KEY_ONLINE_PROFILE, value: JSON.stringify(payload) })
+}
+
+// ---------------------------------------------------------------------------
+// Online reconnect (shared across tabs — production seat takeover)
+// ---------------------------------------------------------------------------
+
+/** Load the durable reconnect blob, or null if absent/invalid. */
+export async function loadOnlineReconnect(): Promise<OnlineReconnect | null> {
+  try {
+    const { value } = await Preferences.get({ key: KEY_ONLINE_RECONNECT })
+    if (!value) return null
+    return parseOnlineReconnect(JSON.parse(value))
+  } catch {
+    return null
+  }
+}
+
+/** Persist reconnect so refresh / another tab can reclaim the seat. */
+export async function saveOnlineReconnect(data: OnlineReconnect): Promise<void> {
+  const payload: StoredOnlineReconnect = {
+    version: ONLINE_RECONNECT_VERSION,
+    roomCode: data.roomCode,
+    reconnectToken: data.reconnectToken,
+    displayName: data.displayName,
+    avatarId: data.avatarId,
+  }
+  if (
+    !payload.roomCode
+    || !payload.reconnectToken
+    || !payload.displayName.trim()
+    || !payload.avatarId
+  ) {
+    return
+  }
+  await Preferences.set({ key: KEY_ONLINE_RECONNECT, value: JSON.stringify(payload) })
+}
+
+/** Drop the durable reconnect entry (leave / room closed / non-takeover kick). */
+export async function clearOnlineReconnect(): Promise<void> {
+  await Preferences.remove({ key: KEY_ONLINE_RECONNECT })
 }

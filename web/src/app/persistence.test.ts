@@ -30,12 +30,15 @@ vi.mock('@capacitor/preferences', () => ({
 // Import AFTER mock is set up
 import {
   clearActiveGame,
+  clearOnlineReconnect,
   loadActiveGame,
   loadOnlineProfile,
+  loadOnlineReconnect,
   loadPrefs,
   normalizeSeats,
   saveActiveGame,
   saveOnlineProfile,
+  saveOnlineReconnect,
   savePrefs,
 } from './persistence'
 import type { GameState } from '../game/state'
@@ -284,5 +287,59 @@ describe('online profile', () => {
       displayName: 'Bob',
       avatarId: 'h01',
     })
+  })
+})
+
+describe('online reconnect', () => {
+  it('returns null when nothing is stored', async () => {
+    expect(await loadOnlineReconnect()).toBeNull()
+  })
+
+  it('round-trips reconnect fields', async () => {
+    await saveOnlineReconnect({
+      roomCode: 'ABCD12',
+      reconnectToken: 'tok-1',
+      displayName: 'Ada',
+      avatarId: 'h03',
+    })
+    expect(await loadOnlineReconnect()).toEqual({
+      roomCode: 'ABCD12',
+      reconnectToken: 'tok-1',
+      displayName: 'Ada',
+      avatarId: 'h03',
+    })
+  })
+
+  it('discards invalid payloads', async () => {
+    store.set(
+      'mb:online-reconnect',
+      JSON.stringify({ version: 1, roomCode: 'ABCD12', reconnectToken: 'tok' }),
+    )
+    expect(await loadOnlineReconnect()).toBeNull()
+  })
+
+  it('discards wrong schema version', async () => {
+    store.set(
+      'mb:online-reconnect',
+      JSON.stringify({
+        version: 99,
+        roomCode: 'ABCD12',
+        reconnectToken: 'tok-1',
+        displayName: 'Ada',
+        avatarId: 'h01',
+      }),
+    )
+    expect(await loadOnlineReconnect()).toBeNull()
+  })
+
+  it('clearOnlineReconnect removes the entry', async () => {
+    await saveOnlineReconnect({
+      roomCode: 'ABCD12',
+      reconnectToken: 'tok-1',
+      displayName: 'Ada',
+      avatarId: 'h01',
+    })
+    await clearOnlineReconnect()
+    expect(await loadOnlineReconnect()).toBeNull()
   })
 })

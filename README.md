@@ -105,6 +105,11 @@ npm run dev:worker   # http://127.0.0.1:8787
 npm run dev:web      # http://localhost:5173 — proxies /api to the worker
 ```
 
+**Multiple clients in one browser**
+
+- Normal URL (`http://localhost:5173`): durable name/avatar + reconnect. A second tab takes over the same seat ("Opened in another tab" on the first).
+- Extra test clients: open `http://localhost:5173/?guest=2` (or `?guest=3`, `?guest=alice`, …). Guest tabs keep identity/reconnect in that tab only and do not overwrite your saved profile. From create/join/lobby in DEV, use **Open guest tab**.
+
 Deploy the worker with `npm run deploy:worker` (see `worker/README.md`). Set `VITE_API_BASE` for production builds.
 
 ### Building and Deploying
