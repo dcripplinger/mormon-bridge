@@ -5,12 +5,16 @@ import { cardDisplayText, compareCards } from './card'
  * AI decision logs are on only when both:
  * - Vite is in DEV mode (`import.meta.env.DEV`)
  * - `VITE_AI_DEBUG=1` is set at startup (e.g. `npm run dev:ai`)
+ *
+ * Outside Vite (e.g. Cloudflare Worker), `import.meta.env` is absent and
+ * logging stays off. Must not throw — AI runs on the host path too.
  */
 export function isAiDebugEnabled(): boolean {
+  const env = import.meta.env as ImportMetaEnv | undefined
+  if (env == null) return false
   return (
-    import.meta.env.DEV === true &&
-    (import.meta.env.VITE_AI_DEBUG === '1' ||
-      import.meta.env.VITE_AI_DEBUG === 'true')
+    env.DEV === true &&
+    (env.VITE_AI_DEBUG === '1' || env.VITE_AI_DEBUG === 'true')
   )
 }
 

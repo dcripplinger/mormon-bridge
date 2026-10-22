@@ -30,6 +30,26 @@ describe('ai-log', () => {
     expect(isAiDebugEnabled()).toBe(true)
   })
 
+  it('is disabled when import.meta.env is missing (worker)', () => {
+    // Cloudflare Worker has no Vite-injected env object.
+    const meta = import.meta as { env?: ImportMetaEnv }
+    const previous = meta.env
+    meta.env = undefined
+    try {
+      expect(isAiDebugEnabled()).toBe(false)
+      expect(() =>
+        aiLog({
+          playerLabel: 'Bot#1',
+          decision: 'buy',
+          reason: 'must not throw',
+          hand: [],
+        }),
+      ).not.toThrow()
+    } finally {
+      meta.env = previous
+    }
+  })
+
   it('formats hand shorthand in ascending order', () => {
     const hand = [
       card('a', 'black', 12),

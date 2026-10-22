@@ -354,26 +354,6 @@ export default function OnlineSession({
     client.connect(roomWebSocketUrl(apiBase, code))
   }, [apiBase, handleServerMessage, reportConnectionLost])
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      const stored = await loadReconnect(isGuest)
-      if (cancelled || !stored || connectionLostRef.current) return
-      const deepLinkCode = initialRoomCode ? normalizeRoomCode(initialRoomCode) : ''
-      // Deep link to a different room → show join form, do not auto-reconnect.
-      if (deepLinkCode && deepLinkCode !== stored.roomCode) return
-      setDisplayName(stored.displayName)
-      setAvatarId(initialAvatarId(stored.avatarId))
-      setRoomCode(stored.roomCode)
-      connectAndJoinReliable(stored.roomCode, stored.reconnectToken)
-    })()
-    return () => {
-      cancelled = true
-    }
-    // once on mount for refresh reconnect
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   useEffect(() => () => {
     clientRef.current?.close({ silent: true })
     clientRef.current = null
@@ -409,6 +389,8 @@ export default function OnlineSession({
     setError(null)
     persistProfile(displayName, avatarId)
     try {
+      // Drop any prior room seat so Create never rejoins the old game.
+      await clearReconnect(isGuest)
       const { roomCode: code } = await createRoom(apiBase, tableSize)
       setRoomCode(code)
       connectAndJoinReliable(code)
